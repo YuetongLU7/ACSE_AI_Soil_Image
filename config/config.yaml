@@ -1,0 +1,34 @@
+preprocessing:
+  # 米尺检测配置
+  ruler_detection:
+    min_length: 100  # 最小长度(像素)
+    max_length: 2000  # 最大长度(像素)
+    confidence_threshold: 0.5
+    
+  # 土壤分割配置
+  soil_segmentation:
+    remove_objects: ['ruler', 'tools', 'sky', 'vegetation']
+    mask_type: 'transparent'  # 'transparent' or 'black'
+    min_soil_area: 1000  # 最小土壤区域面积
+    
+  # 质量控制配置
+  quality_control:
+    enable_filtering: true  # 是否启用质量过滤
+    min_soil_coverage: 0.15  # 最小土壤覆盖率（15%）
+    max_reflection_ratio: 0.3  # 最大反光区域比例（30%）
+    min_contrast: 20  # 最小对比度
+    max_shadow_ratio: 0.4  # 最大阴影区域比例（40%）
+    min_mask_connectivity: 0.6  # 最小掩码连通性（60%）
+    
+  # 输出配置
+  output:
+    save_intermediate: true
+    image_format: 'png'
+    mask_format: 'png'
+    
+# 路径配置
+paths:
+  raw_data: 'data/raw'
+  processed_data: 'data/processed'
+  annotations: 'data/annotations'
+  models: 'models'
