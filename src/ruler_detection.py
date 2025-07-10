@@ -6,17 +6,16 @@ import re
 try:
     import easyocr
     OCR_AVAILABLE = True
-    print("使用 EasyOCR 进行数字检测")
+    print("Use EasyOCR for digit detection")
 except ImportError:
     try:
         import pytesseract
         import os
         
-        # 设置 Tesseract 路径
+        # Set Tesseract path
         tesseract_paths = [
             r'E:\SoftwareForStudy\tesseract.exe',
-            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe'
         ]
         
         tesseract_found = False
@@ -24,15 +23,15 @@ except ImportError:
             if os.path.exists(path):
                 pytesseract.pytesseract.tesseract_cmd = path
                 tesseract_found = True
-                print(f"找到 Tesseract: {path}")
+                print(f"Found Tesseract: {path}")
                 break
         
         OCR_AVAILABLE = tesseract_found
         if not tesseract_found:
-            print("警告: 未找到 OCR 引擎")
+            print("Warning: OCR engine not found")
     except ImportError:
         OCR_AVAILABLE = False
-        print("未安装 OCR 引擎")
+        print("OCR engine not installed")
 
 class RulerDetector:
     """Ruler Detector - Detect the ruler in the image and give the pixel/cm ratio"""

@@ -44,7 +44,7 @@ class SoilImagePreprocessor:
         Returns:
             Dict: Processing result
         """
-        # Read the image with proper encoding support for Chinese characters
+        # Read the image with proper encoding support for France accents
         try:
             # Use np.fromfile for better Unicode support
             image_data = np.fromfile(image_path, dtype=np.uint8)
@@ -65,7 +65,7 @@ class SoilImagePreprocessor:
             ruler_mask = self.ruler_detector.extract_ruler_region(image, ruler_info)
             print(f"Successfully detected ruler，scale ratio: {ruler_info['scale_ratio']:.2f} pixel/cm")
         
-        # 步骤2: 土壤区域分割和物体移除
+        # Step 2: Soil segmentation and objects removal
         segmentation_result = self.soil_segmentation.process_image(
             image, 
             ruler_mask, 
