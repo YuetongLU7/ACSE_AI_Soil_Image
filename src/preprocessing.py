@@ -425,16 +425,16 @@ class SoilImagePreprocessor:
             json.dump(report, f, indent=2, ensure_ascii=False)
             
         # 打印摘要
-        print(f"\\n质量评估摘要:")
-        print(f"  总图像数: {total_count}")
-        print(f"  高质量: {high_quality_count} ({high_quality_count/total_count*100:.1f}%)")
-        print(f"  低质量: {low_quality_count} ({low_quality_count/total_count*100:.1f}%)")
-        
+        print(f"\\nRésumé de l'évaluation de la qualité:")
+        print(f"  Nombre total d'images: {total_count}")
+        print(f"  Haute qualité: {high_quality_count} ({high_quality_count/total_count*100:.1f}%)")
+        print(f"  Basse qualité: {low_quality_count} ({low_quality_count/total_count*100:.1f}%)")
+
         if problem_stats:
-            print(f"\\n主要质量问题:")
+            print(f"\\nPrincipaux problèmes de qualité:")
             for problem, count in sorted(problem_stats.items(), key=lambda x: x[1], reverse=True):
-                print(f"  {problem}: {count} 张图像")
-    
+                print(f"  {problem}: {count} images")
+
     def create_training_dataset(self, processed_results: List[Dict], 
                               output_dir: str, 
                               train_ratio: float = 0.8):
