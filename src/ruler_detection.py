@@ -120,7 +120,7 @@ class RulerDetector:
     
     def _detect_scale_digits_enhanced(self, image: np.ndarray) -> List[dict]:
         """
-        增强的刻度数字检测
+        优化的刻度数字检测 - 更快更准确
         
         Args:
             image: 输入图像
@@ -128,54 +128,55 @@ class RulerDetector:
         Returns:
             List[dict]: 检测到的数字信息列表
         """
-        # 转换为灰度图
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # 只在图像右侧区域搜索米尺（通常米尺在右边）
+        h, w = image.shape[:2]
+        roi_x_start = max(0, w - 300)  # 只检测右边300像素
+        roi = image[:, roi_x_start:]
         
+        # 转换为灰度图
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        
+        # 简化的图像预处理
         # 增强对比度
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4,4))
         enhanced = clahe.apply(gray)
         
-        # 应用高斯滤波减少噪声
-        blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
+        # 二值化 - 使用OTSU自动阈值
+        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # 自适应阈值处理
-        binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                     cv2.THRESH_BINARY, 11, 2)
+        # 反转图像（使文字为白色，背景为黑色）
+        binary_inv = cv2.bitwise_not(binary)
         
-        # 形态学操作去除小噪声
-        kernel = np.ones((2,2), np.uint8)
-        cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-        
-        # 放大图像提高OCR准确性
-        height, width = cleaned.shape
-        scale_factor = max(3, 500 // min(height, width))  # 提高放大倍数
-        resized = cv2.resize(cleaned, (width * scale_factor, height * scale_factor), 
+        # 适度放大 - 减少计算量
+        height, width = binary_inv.shape
+        scale_factor = 2  # 固定2倍放大
+        resized = cv2.resize(binary_inv, (width * scale_factor, height * scale_factor), 
                            interpolation=cv2.INTER_CUBIC)
         
         try:
-            # OCR配置 - 只检测数字
-            config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789'
+            # 简单的数字检测配置
+            config = r'--psm 6 -c tessedit_char_whitelist=0123456789'
             
             # 获取文本和位置数据
             data = pytesseract.image_to_data(resized, config=config, output_type=pytesseract.Output.DICT)
             
-            # 提取有效的刻度数字
+            # 提取米尺刻度数字：0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120
             valid_digits = []
             for i in range(len(data['text'])):
                 text = data['text'][i].strip()
                 if text.isdigit():
                     num = int(text)
-                    # 只保留10的倍数且在合理范围内 (0-120cm)
+                    # 米尺刻度：10的倍数，0-120cm范围
                     if 0 <= num <= 120 and num % 10 == 0:
-                        # 将坐标转换回原图像尺寸
-                        x = data['left'][i] // scale_factor
+                        # 转换坐标到原图
+                        x = data['left'][i] // scale_factor + roi_x_start
                         y = data['top'][i] // scale_factor
                         w = data['width'][i] // scale_factor
                         h = data['height'][i] // scale_factor
                         confidence = data['conf'][i]
                         
-                        # 过滤置信度太低的检测
-                        if confidence > 30 and w > 3 and h > 3:
+                        # 基本过滤
+                        if confidence > 30:
                             valid_digits.append({
                                 'value': num,
                                 'x': x,
@@ -193,7 +194,10 @@ class RulerDetector:
             # 按Y坐标排序（从上到下）
             valid_digits.sort(key=lambda d: d['y'])
             
-            print(f"检测到 {len(valid_digits)} 个刻度数字: {[d['value'] for d in valid_digits]}")
+            # 调试信息
+            all_text = [data['text'][i].strip() for i in range(len(data['text'])) if data['text'][i].strip()]
+            print(f"OCR检测到所有文本: {all_text}")
+            print(f"有效刻度数字: {[d['value'] for d in valid_digits]}")
             
             return valid_digits
             
