@@ -5,9 +5,31 @@ import math
 import re
 try:
     import pytesseract
-    TESSERACT_AVAILABLE = True
+    import os
+    
+    # 设置 Tesseract 路径
+    tesseract_paths = [
+        r'E:\SoftwareForStudy\tesseract.exe',
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+    ]
+    
+    tesseract_found = False
+    for path in tesseract_paths:
+        if os.path.exists(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            tesseract_found = True
+            print(f"找到 Tesseract: {path}")
+            break
+    
+    if not tesseract_found:
+        print("警告: 未找到 Tesseract 可执行文件")
+        print("请确保 Tesseract 已正确安装并设置路径")
+    
+    TESSERACT_AVAILABLE = tesseract_found
 except ImportError:
     TESSERACT_AVAILABLE = False
+    print("pytesseract 未安装")
 
 class RulerDetector:
     """Ruler Detector - Detect the ruler in the image and give the pixel/cm ratio"""
@@ -18,7 +40,7 @@ class RulerDetector:
         
     def detect_ruler(self, image: np.ndarray) -> Optional[dict]:
         """
-        Detect the ruler in the image - focus on vertical rectangular shape with scale marks
+        Detect the ruler in the image - focus on digit detection approach
         
         Args:
             image: input image in BGR format
@@ -26,23 +48,223 @@ class RulerDetector:
         Returns:
             dict: a dictionary containing the ruler information, if not detected return None
         """
-        # 主要方法: 垂直长矩形形态检测 + 刻度识别
+        # 主要方法: 直接通过OCR检测数字
+        ruler_info = self._detect_ruler_by_digits(image)
+        
+        if ruler_info is not None:
+            return ruler_info
+        
+        # 备用方法: 原有的形态学检测
         ruler_info_morphology = self._detect_ruler_by_morphology(image)
         
-        # 备用方法: 改进的霍夫直线检测（针对垂直方向）
-        ruler_info_hough = self._detect_ruler_by_vertical_hough(image)
+        if ruler_info_morphology is not None:
+            return ruler_info_morphology
         
-        # 选择最佳结果
-        candidates = [ruler_info_morphology, ruler_info_hough]
-        candidates = [c for c in candidates if c is not None]
+        return None
+    
+    def _detect_ruler_by_digits(self, image: np.ndarray) -> Optional[dict]:
+        """
+        通过OCR检测刻度数字来检测米尺
         
-        if not candidates:
+        Args:
+            image: 输入图像
+            
+        Returns:
+            dict: 米尺信息，如果检测失败返回None
+        """
+        if not TESSERACT_AVAILABLE:
+            print("Warning: pytesseract not available, cannot detect ruler digits")
             return None
         
-        # 选择置信度最高的结果
-        best_candidate = max(candidates, key=lambda x: x.get('confidence', 0))
+        # 检测刻度数字
+        digits_info = self._detect_scale_digits_enhanced(image)
         
-        return best_candidate
+        if not digits_info or len(digits_info) < 2:
+            return None
+        
+        # 计算像素/厘米比例
+        scale_ratio = self._calculate_scale_ratio_from_digits(digits_info)
+        
+        if scale_ratio is None:
+            return None
+        
+        # 找到数字的横坐标中位数
+        x_coords = [digit['center_x'] for digit in digits_info]
+        median_x = int(np.median(x_coords))
+        
+        # 创建米尺掩码坐标（中位数左右200px）
+        h, w = image.shape[:2]
+        mask_left = max(0, median_x - 200)
+        mask_right = min(w, median_x + 200)
+        
+        # 找到最顶部的数字作为深度参考
+        top_digit = min(digits_info, key=lambda d: d['y'])
+        
+        # 创建简化的线坐标用于兼容现有接口
+        line_coords = np.array([median_x, 0, median_x, h])
+        
+        return {
+            'line_coords': line_coords,
+            'pixel_length': h,
+            'scale_ratio': scale_ratio,
+            'ruler_detected': True,
+            'confidence': 0.9,
+            'detection_method': 'digit_detection',
+            'median_x': median_x,
+            'mask_left': mask_left,
+            'mask_right': mask_right,
+            'top_digit_value': top_digit['value'],
+            'top_digit_y': top_digit['y'],
+            'detected_digits': digits_info
+        }
+    
+    def _detect_scale_digits_enhanced(self, image: np.ndarray) -> List[dict]:
+        """
+        增强的刻度数字检测
+        
+        Args:
+            image: 输入图像
+            
+        Returns:
+            List[dict]: 检测到的数字信息列表
+        """
+        # 转换为灰度图
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        
+        # 增强对比度
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        enhanced = clahe.apply(gray)
+        
+        # 应用高斯滤波减少噪声
+        blurred = cv2.GaussianBlur(enhanced, (3, 3), 0)
+        
+        # 自适应阈值处理
+        binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                     cv2.THRESH_BINARY, 11, 2)
+        
+        # 形态学操作去除小噪声
+        kernel = np.ones((2,2), np.uint8)
+        cleaned = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+        
+        # 放大图像提高OCR准确性
+        height, width = cleaned.shape
+        scale_factor = max(3, 500 // min(height, width))  # 提高放大倍数
+        resized = cv2.resize(cleaned, (width * scale_factor, height * scale_factor), 
+                           interpolation=cv2.INTER_CUBIC)
+        
+        try:
+            # OCR配置 - 只检测数字
+            config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789'
+            
+            # 获取文本和位置数据
+            data = pytesseract.image_to_data(resized, config=config, output_type=pytesseract.Output.DICT)
+            
+            # 提取有效的刻度数字
+            valid_digits = []
+            for i in range(len(data['text'])):
+                text = data['text'][i].strip()
+                if text.isdigit():
+                    num = int(text)
+                    # 只保留10的倍数且在合理范围内 (0-120cm)
+                    if 0 <= num <= 120 and num % 10 == 0:
+                        # 将坐标转换回原图像尺寸
+                        x = data['left'][i] // scale_factor
+                        y = data['top'][i] // scale_factor
+                        w = data['width'][i] // scale_factor
+                        h = data['height'][i] // scale_factor
+                        confidence = data['conf'][i]
+                        
+                        # 过滤置信度太低的检测
+                        if confidence > 30 and w > 3 and h > 3:
+                            valid_digits.append({
+                                'value': num,
+                                'x': x,
+                                'y': y,
+                                'width': w,
+                                'height': h,
+                                'center_x': x + w//2,
+                                'center_y': y + h//2,
+                                'confidence': confidence
+                            })
+            
+            # 去除重复检测
+            valid_digits = self._remove_duplicate_digits(valid_digits)
+            
+            # 按Y坐标排序（从上到下）
+            valid_digits.sort(key=lambda d: d['y'])
+            
+            print(f"检测到 {len(valid_digits)} 个刻度数字: {[d['value'] for d in valid_digits]}")
+            
+            return valid_digits
+            
+        except Exception as e:
+            print(f"OCR检测错误: {e}")
+            return []
+    
+    def _remove_duplicate_digits(self, digits: List[dict]) -> List[dict]:
+        """去除重复检测的数字"""
+        if not digits:
+            return []
+        
+        # 按数值分组
+        digit_groups = {}
+        for digit in digits:
+            value = digit['value']
+            if value not in digit_groups:
+                digit_groups[value] = []
+            digit_groups[value].append(digit)
+        
+        # 对每个数值，保留置信度最高的检测
+        filtered_digits = []
+        for value, group in digit_groups.items():
+            if len(group) == 1:
+                filtered_digits.append(group[0])
+            else:
+                # 保留置信度最高的
+                best_digit = max(group, key=lambda d: d['confidence'])
+                filtered_digits.append(best_digit)
+        
+        return filtered_digits
+    
+    def _calculate_scale_ratio_from_digits(self, digits: List[dict]) -> Optional[float]:
+        """
+        从检测到的数字计算像素/厘米比例
+        
+        Args:
+            digits: 检测到的数字信息列表
+            
+        Returns:
+            float: 像素/厘米比例，如果计算失败返回None
+        """
+        if len(digits) < 2:
+            return None
+        
+        # 按Y坐标排序
+        sorted_digits = sorted(digits, key=lambda d: d['center_y'])
+        
+        # 寻找最佳的数字对来计算比例
+        best_ratio = None
+        max_distance = 0
+        
+        for i in range(len(sorted_digits)):
+            for j in range(i+1, len(sorted_digits)):
+                digit1 = sorted_digits[i]
+                digit2 = sorted_digits[j]
+                
+                # 计算像素距离
+                pixel_distance = abs(digit2['center_y'] - digit1['center_y'])
+                
+                # 计算厘米距离
+                cm_distance = abs(digit2['value'] - digit1['value'])
+                
+                if cm_distance > 0 and pixel_distance > max_distance:
+                    max_distance = pixel_distance
+                    best_ratio = pixel_distance / cm_distance
+        
+        if best_ratio is not None:
+            print(f"计算得到比例: {best_ratio:.2f} 像素/厘米")
+        
+        return best_ratio
     
     def _detect_ruler_by_morphology(self, image: np.ndarray) -> Optional[dict]:
         """使用形态学方法检测垂直长矩形卷尺"""
@@ -411,16 +633,24 @@ class RulerDetector:
     def extract_ruler_region(self, image: np.ndarray, ruler_info: dict) -> np.ndarray:
         """从图像中提取米尺区域用于后续处理"""
         if not ruler_info['ruler_detected']:
-            return image
-            
+            return np.zeros(image.shape[:2], dtype=np.uint8)
+        
         # 创建掩码，标记米尺区域
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
         
-        x1, y1, x2, y2 = ruler_info['line_coords']
-        
-        # 创建粗化的线条掩码
-        thickness = 20
-        cv2.line(mask, (x1, y1), (x2, y2), 255, thickness)
+        # 如果是数字检测方法，使用简化的矩形掩码
+        if ruler_info.get('detection_method') == 'digit_detection':
+            h, w = image.shape[:2]
+            left = ruler_info['mask_left']
+            right = ruler_info['mask_right']
+            
+            # 创建垂直条状掩码
+            mask[:, left:right] = 255
+        else:
+            # 使用原有的线条掩码方法
+            x1, y1, x2, y2 = ruler_info['line_coords']
+            thickness = 20
+            cv2.line(mask, (x1, y1), (x2, y2), 255, thickness)
         
         return mask
     
@@ -428,15 +658,37 @@ class RulerDetector:
         """可视化米尺检测结果"""
         if not ruler_info['ruler_detected']:
             return image
-            
+        
         result = image.copy()
-        x1, y1, x2, y2 = ruler_info['line_coords']
         
-        # 绘制检测到的米尺
-        cv2.line(result, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        # 如果是数字检测方法，显示检测到的数字
+        if ruler_info.get('detection_method') == 'digit_detection':
+            # 绘制检测到的数字
+            for digit in ruler_info.get('detected_digits', []):
+                x, y, w, h = digit['x'], digit['y'], digit['width'], digit['height']
+                cv2.rectangle(result, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(result, str(digit['value']), (x, y-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            
+            # 绘制中位线
+            median_x = ruler_info['median_x']
+            cv2.line(result, (median_x, 0), (median_x, image.shape[0]), (255, 0, 0), 2)
+            
+            # 绘制掩码区域
+            left = ruler_info['mask_left']
+            right = ruler_info['mask_right']
+            cv2.rectangle(result, (left, 0), (right, image.shape[0]), (0, 0, 255), 2)
+            
+            # 添加深度参考信息
+            cv2.putText(result, f"Top: {ruler_info['top_digit_value']}cm", 
+                       (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        else:
+            # 使用原有的线条可视化
+            x1, y1, x2, y2 = ruler_info['line_coords']
+            cv2.line(result, (x1, y1), (x2, y2), (0, 255, 0), 3)
         
-        # 添加文本信息
+        # 添加比例信息
         cv2.putText(result, f"Scale: {ruler_info['scale_ratio']:.2f} px/cm", 
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
         return result

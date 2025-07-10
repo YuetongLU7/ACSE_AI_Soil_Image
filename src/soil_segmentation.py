@@ -9,12 +9,13 @@ class SoilSegmentation:
         pass
         
     
-    def segment_soil_area(self, image: np.ndarray) -> np.ndarray:
+    def segment_soil_area(self, image: np.ndarray, ruler_mask: np.ndarray = None) -> np.ndarray:
         """
         基于排除法分割土壤区域：去除天空、植被、米尺等非土壤区域
         
         Args:
             image: 输入图像
+            ruler_mask: 米尺掩码（可选），如果提供则直接使用，否则自动检测
             
         Returns:
             np.ndarray: 土壤区域掩码
@@ -33,9 +34,13 @@ class SoilSegmentation:
         vegetation_mask = self._detect_vegetation_region(hsv)
         soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(vegetation_mask))
         
-        # 3. 排除米尺区域（黑白长条）
-        ruler_mask = self._detect_ruler_region(image)
-        soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(ruler_mask))
+        # 3. 排除米尺区域（使用传入的米尺掩码）
+        if ruler_mask is not None:
+            soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(ruler_mask))
+        else:
+            # 如果没有传入米尺掩码，使用原有的检测方法
+            detected_ruler_mask = self._detect_ruler_region(image)
+            soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(detected_ruler_mask))
         
         # 4. 排除极亮区域（过曝光）
         bright_mask = self._detect_overexposed_region(image)
@@ -132,16 +137,16 @@ class SoilSegmentation:
         return vegetation_mask
     
     def _detect_ruler_region(self, image: np.ndarray) -> np.ndarray:
-        """基于形状和纹理特征检测米尺区域"""
+        """基于形状和纹理特征检测米尺区域 - 更严格的检测"""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
         
         # 1. 边缘检测 - 找到强边缘
         edges = cv2.Canny(gray, 50, 150, apertureSize=3)
         
-        # 2. 霍夫直线检测 - 寻找长直线
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=50,
-                               minLineLength=100, maxLineGap=10)
+        # 2. 霍夫直线检测 - 更严格的参数
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80,  # 提高阈值
+                               minLineLength=300, maxLineGap=20)  # 要求更长的线段
         
         ruler_mask = np.zeros_like(gray)
         
@@ -151,29 +156,29 @@ class SoilSegmentation:
                 x1, y1, x2, y2 = line[0]
                 length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
                 
-                # 只考虑长线段
-                if length > 200:
+                # 只考虑很长的线段
+                if length > 400:  # 提高长度要求
                     # 计算线段方向
                     angle = np.arctan2(y2-y1, x2-x1) * 180 / np.pi
                     
                     # 垂直或水平方向的长线段
-                    if abs(angle) < 15 or abs(angle) > 165 or abs(abs(angle) - 90) < 15:
+                    if abs(angle) < 10 or abs(angle) > 170 or abs(abs(angle) - 90) < 10:  # 更严格的角度要求
                         # 在线段周围创建矩形区域
-                        thickness = 30  # 米尺厚度
+                        thickness = 40  # 增加厚度以确保覆盖米尺
                         
                         # 计算垂直于线段的方向
-                        if abs(angle) < 15 or abs(angle) > 165:  # 水平线
+                        if abs(angle) < 10 or abs(angle) > 170:  # 水平线
                             # 创建水平矩形
                             y_start = max(0, min(y1, y2) - thickness//2)
                             y_end = min(h, max(y1, y2) + thickness//2)
-                            x_start = max(0, min(x1, x2) - 10)
-                            x_end = min(w, max(x1, x2) + 10)
+                            x_start = max(0, min(x1, x2) - 20)
+                            x_end = min(w, max(x1, x2) + 20)
                         else:  # 垂直线
                             # 创建垂直矩形
                             x_start = max(0, min(x1, x2) - thickness//2)
                             x_end = min(w, max(x1, x2) + thickness//2)
-                            y_start = max(0, min(y1, y2) - 10)
-                            y_end = min(h, max(y1, y2) + 10)
+                            y_start = max(0, min(y1, y2) - 20)
+                            y_end = min(h, max(y1, y2) + 20)
                         
                         # 提取候选区域
                         candidate_region = gray[y_start:y_end, x_start:x_end]
@@ -184,10 +189,10 @@ class SoilSegmentation:
                                 ruler_mask[y_start:y_end, x_start:x_end] = 255
         
         # 5. 形态学操作连接相邻区域
-        kernel = np.ones((5, 5), np.uint8)
+        kernel = np.ones((7, 7), np.uint8)
         ruler_mask = cv2.morphologyEx(ruler_mask, cv2.MORPH_CLOSE, kernel)
         
-        # 6. 最终形状过滤
+        # 6. 更严格的最终形状过滤
         contours, _ = cv2.findContours(ruler_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         filtered_mask = np.zeros_like(ruler_mask)
         
@@ -197,8 +202,8 @@ class SoilSegmentation:
             if width > 0 and height > 0:
                 aspect_ratio = max(width, height) / min(width, height)
                 area = cv2.contourArea(contour)
-                # 长条形且面积适中
-                if aspect_ratio > 4 and 800 < area < 150000:
+                # 更严格的长宽比和面积要求
+                if aspect_ratio > 8 and 2000 < area < 100000:  # 更高的长宽比要求，更大的最小面积
                     cv2.fillPoly(filtered_mask, [contour], 255)
         
         return filtered_mask
@@ -396,7 +401,7 @@ class SoilSegmentation:
             dict: 处理结果
         """
         # 分割土壤区域
-        soil_mask = self.segment_soil_area(image)
+        soil_mask = self.segment_soil_area(image, ruler_mask)
         
         # 创建去除掩码（非土壤区域）
         remove_mask = cv2.bitwise_not(soil_mask)
