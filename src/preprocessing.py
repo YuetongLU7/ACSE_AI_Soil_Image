@@ -44,10 +44,15 @@ class SoilImagePreprocessor:
         Returns:
             Dict: Processing result
         """
-        # Read the image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Cannot read the image: {image_path}")   #raise for stopping the program when the image cannot be found
+        # Read the image with proper encoding support for Chinese characters
+        try:
+            # Use np.fromfile for better Unicode support
+            image_data = np.fromfile(image_path, dtype=np.uint8)
+            image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+            if image is None:
+                raise ValueError(f"Cannot read the image: {image_path}")
+        except Exception as e:
+            raise ValueError(f"Cannot read the image: {image_path}. Error: {str(e)}")
         
         image_name = Path(image_path).stem   # stem means the file name without the extension
         

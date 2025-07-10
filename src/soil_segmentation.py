@@ -62,23 +62,23 @@ class SoilSegmentation:
         h, w = image.shape[:2]
         
         # 1. 检测蓝色天空
-        lower_blue_sky = np.array([100, 50, 80])
-        upper_blue_sky = np.array([130, 255, 255])
+        lower_blue_sky = np.array([100, 50, 80], dtype=np.uint8)
+        upper_blue_sky = np.array([130, 255, 255], dtype=np.uint8)
         blue_sky_mask = cv2.inRange(hsv, lower_blue_sky, upper_blue_sky)
         
         # 2. 检测浅蓝色天空
-        lower_light_blue = np.array([90, 30, 150])
-        upper_light_blue = np.array([120, 200, 255])
+        lower_light_blue = np.array([90, 30, 150], dtype=np.uint8)
+        upper_light_blue = np.array([120, 200, 255], dtype=np.uint8)
         light_blue_mask = cv2.inRange(hsv, lower_light_blue, upper_light_blue)
         
         # 3. 检测白色/灰色天空（阴天）
-        lower_white_sky = np.array([0, 0, 200])
-        upper_white_sky = np.array([180, 40, 255])
+        lower_white_sky = np.array([0, 0, 200], dtype=np.uint8)
+        upper_white_sky = np.array([180, 40, 255], dtype=np.uint8)
         white_sky_mask = cv2.inRange(hsv, lower_white_sky, upper_white_sky)
         
         # 4. 检测灰色天空
-        lower_gray_sky = np.array([0, 0, 150])
-        upper_gray_sky = np.array([180, 30, 200])
+        lower_gray_sky = np.array([0, 0, 150], dtype=np.uint8)
+        upper_gray_sky = np.array([180, 30, 200], dtype=np.uint8)
         gray_sky_mask = cv2.inRange(hsv, lower_gray_sky, upper_gray_sky)
         
         # 组合所有天空掩码
@@ -104,18 +104,18 @@ class SoilSegmentation:
         # 多种绿色植被的HSV范围
         
         # 浅绿色植被
-        lower_light_green = np.array([35, 30, 30])
-        upper_light_green = np.array([85, 255, 255])
+        lower_light_green = np.array([35, 30, 30], dtype=np.uint8)
+        upper_light_green = np.array([85, 255, 255], dtype=np.uint8)
         light_green_mask = cv2.inRange(hsv, lower_light_green, upper_light_green)
         
         # 深绿色植被
-        lower_dark_green = np.array([40, 50, 20])
-        upper_dark_green = np.array([80, 255, 200])
+        lower_dark_green = np.array([40, 50, 20], dtype=np.uint8)
+        upper_dark_green = np.array([80, 255, 200], dtype=np.uint8)
         dark_green_mask = cv2.inRange(hsv, lower_dark_green, upper_dark_green)
         
         # 黄绿色植被（干草等）
-        lower_yellow_green = np.array([25, 40, 40])
-        upper_yellow_green = np.array([40, 255, 255])
+        lower_yellow_green = np.array([25, 40, 40], dtype=np.uint8)
+        upper_yellow_green = np.array([40, 255, 255], dtype=np.uint8)
         yellow_green_mask = cv2.inRange(hsv, lower_yellow_green, upper_yellow_green)
         
         # 合并所有植被掩码
@@ -262,23 +262,23 @@ class SoilSegmentation:
         # 1. 检测金属工具的典型颜色
         
         # 银色/灰色金属（刀具、锤子头）
-        lower_metal = np.array([0, 0, 120])
-        upper_metal = np.array([180, 40, 220])
+        lower_metal = np.array([0, 0, 120], dtype=np.uint8)
+        upper_metal = np.array([180, 40, 220], dtype=np.uint8)
         metal_mask = cv2.inRange(bottom_hsv, lower_metal, upper_metal)
         
         # 暗灰色金属（鉄制工具）
-        lower_dark_metal = np.array([0, 0, 60])
-        upper_dark_metal = np.array([180, 60, 140])
+        lower_dark_metal = np.array([0, 0, 60], dtype=np.uint8)
+        upper_dark_metal = np.array([180, 60, 140], dtype=np.uint8)
         dark_metal_mask = cv2.inRange(bottom_hsv, lower_dark_metal, upper_dark_metal)
         
         # 黄色/棕色工具手柄
-        lower_brown = np.array([8, 50, 50])
-        upper_brown = np.array([25, 255, 200])
+        lower_brown = np.array([8, 50, 50], dtype=np.uint8)
+        upper_brown = np.array([25, 255, 200], dtype=np.uint8)
         brown_mask = cv2.inRange(bottom_hsv, lower_brown, upper_brown)
         
         # 黑色工具手柄
-        lower_black = np.array([0, 0, 0])
-        upper_black = np.array([180, 255, 60])
+        lower_black = np.array([0, 0, 0], dtype=np.uint8)
+        upper_black = np.array([180, 255, 60], dtype=np.uint8)
         black_mask = cv2.inRange(bottom_hsv, lower_black, upper_black)
         
         # 组合所有工具颜色
@@ -457,5 +457,6 @@ class SoilSegmentation:
         return {
             'processed_image': processed_image,
             'soil_mask': soil_mask,
-            'remove_mask': remove_mask
+            'remove_mask': remove_mask,
+            'detected_objects': []  # Initialize empty list for detected objects
         }
