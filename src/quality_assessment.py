@@ -63,19 +63,19 @@ class ImageQualityAssessment:
         issues = []
         
         if soil_coverage < self.min_soil_coverage:
-            issues.append(f"土壤覆盖率过低: {soil_coverage:.2%} < {self.min_soil_coverage:.2%}")
-        
+            issues.append(f"Couverture sol trop faible: {soil_coverage:.2%} < {self.min_soil_coverage:.2%}")
+
         if reflection_ratio > self.max_reflection_ratio:
-            issues.append(f"反光区域过多: {reflection_ratio:.2%} > {self.max_reflection_ratio:.2%}")
-        
+            issues.append(f"Trop de zones réfléchissantes: {reflection_ratio:.2%} > {self.max_reflection_ratio:.2%}")
+
         if contrast_score < self.min_contrast:
-            issues.append(f"对比度不足: {contrast_score:.1f} < {self.min_contrast}")
-        
+            issues.append(f"Contraste insuffisant: {contrast_score:.1f} < {self.min_contrast}")
+
         if shadow_ratio > self.max_shadow_ratio:
-            issues.append(f"阴影区域过多: {shadow_ratio:.2%} > {self.max_shadow_ratio:.2%}")
-        
+            issues.append(f"Trop de zones d'ombre: {shadow_ratio:.2%} > {self.max_shadow_ratio:.2%}")
+
         if connectivity_score < self.min_mask_connectivity:
-            issues.append(f"掩码连通性差: {connectivity_score:.2%} < {self.min_mask_connectivity:.2%}")
+            issues.append(f"Connectivité du masque insuffisante: {connectivity_score:.2%} < {self.min_mask_connectivity:.2%}")
         
         # 计算综合质量分数
         quality_score = self._calculate_overall_quality_score(metrics)
@@ -207,24 +207,24 @@ class ImageQualityAssessment:
         
         # 整体评估
         if results['is_good_quality']:
-            report_lines.append("✅ 图像质量: 良好")
+            report_lines.append("Qualité d'image: Bonne")
         else:
-            report_lines.append("❌ 图像质量: 不合格")
-        
-        report_lines.append(f"质量分数: {results['quality_score']:.2f}")
-        
+            report_lines.append("Qualité d'image: Mauvaise")
+
+        report_lines.append(f"Score de qualité: {results['quality_score']:.2f}")
+
         # 详细指标
         metrics = results['metrics']
-        report_lines.append("\\n详细指标:")
-        report_lines.append(f"- 土壤覆盖率: {metrics['soil_coverage']:.2%}")
-        report_lines.append(f"- 反光区域比例: {metrics['reflection_ratio']:.2%}")
-        report_lines.append(f"- 对比度: {metrics['contrast_score']:.1f}")
-        report_lines.append(f"- 阴影区域比例: {metrics['shadow_ratio']:.2%}")
-        report_lines.append(f"- 掩码连通性: {metrics['connectivity_score']:.2%}")
+        report_lines.append("\\nIndicateurs détaillés:")
+        report_lines.append(f"- Couverture du sol: {metrics['soil_coverage']:.2%}")
+        report_lines.append(f"- Zones réfléchissantes: {metrics['reflection_ratio']:.2%}")
+        report_lines.append(f"- Contraste: {metrics['contrast_score']:.1f}")
+        report_lines.append(f"- Zones d'ombre: {metrics['shadow_ratio']:.2%}")
+        report_lines.append(f"- Connectivité du masque: {metrics['connectivity_score']:.2%}")
         
         # 问题列表
         if results['issues']:
-            report_lines.append("\\n发现的问题:")
+            report_lines.append("\\nProblèmes détectés:")
             for issue in results['issues']:
                 report_lines.append(f"- {issue}")
         
