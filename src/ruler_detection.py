@@ -40,6 +40,7 @@ class RulerDetector:
     def __init__(self, min_length: int = 100, max_length: int = 2000):
         self.min_length = min_length
         self.max_length = max_length
+        self._ocr_reader = None  # 缓存OCR模型，避免重复初始化
         
     def detect_ruler(self, image: np.ndarray) -> Optional[dict]:
         """
@@ -148,10 +149,12 @@ class RulerDetector:
         h, w = image.shape[:2]
         
         try:
-            # 尝试使用 EasyOCR
+            # 尝试使用 EasyOCR - 使用缓存的模型
             if 'easyocr' in globals():
-                reader = easyocr.Reader(['en'], gpu=False)
-                results = reader.readtext(image, allowlist='0123456789')
+                if self._ocr_reader is None:
+                    # 只在第一次使用时初始化
+                    self._ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+                results = self._ocr_reader.readtext(image, allowlist='0123456789')
                 
                 valid_digits = []
                 for (bbox, text, confidence) in results:
