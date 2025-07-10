@@ -4,32 +4,35 @@ from typing import Tuple, List, Optional
 import math
 import re
 try:
-    import pytesseract
-    import os
-    
-    # 设置 Tesseract 路径
-    tesseract_paths = [
-        r'E:\SoftwareForStudy\tesseract.exe',
-        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
-        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
-    ]
-    
-    tesseract_found = False
-    for path in tesseract_paths:
-        if os.path.exists(path):
-            pytesseract.pytesseract.tesseract_cmd = path
-            tesseract_found = True
-            print(f"找到 Tesseract: {path}")
-            break
-    
-    if not tesseract_found:
-        print("警告: 未找到 Tesseract 可执行文件")
-        print("请确保 Tesseract 已正确安装并设置路径")
-    
-    TESSERACT_AVAILABLE = tesseract_found
+    import easyocr
+    OCR_AVAILABLE = True
+    print("使用 EasyOCR 进行数字检测")
 except ImportError:
-    TESSERACT_AVAILABLE = False
-    print("pytesseract 未安装")
+    try:
+        import pytesseract
+        import os
+        
+        # 设置 Tesseract 路径
+        tesseract_paths = [
+            r'E:\SoftwareForStudy\tesseract.exe',
+            r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+            r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe'
+        ]
+        
+        tesseract_found = False
+        for path in tesseract_paths:
+            if os.path.exists(path):
+                pytesseract.pytesseract.tesseract_cmd = path
+                tesseract_found = True
+                print(f"找到 Tesseract: {path}")
+                break
+        
+        OCR_AVAILABLE = tesseract_found
+        if not tesseract_found:
+            print("警告: 未找到 OCR 引擎")
+    except ImportError:
+        OCR_AVAILABLE = False
+        print("未安装 OCR 引擎")
 
 class RulerDetector:
     """Ruler Detector - Detect the ruler in the image and give the pixel/cm ratio"""
@@ -72,8 +75,7 @@ class RulerDetector:
         Returns:
             dict: 米尺信息，如果检测失败返回None
         """
-        if not TESSERACT_AVAILABLE:
-            print("Warning: pytesseract not available, cannot detect ruler digits")
+        if not OCR_AVAILABLE:
             return None
         
         # 检测刻度数字
@@ -92,10 +94,20 @@ class RulerDetector:
         x_coords = [digit['center_x'] for digit in digits_info]
         median_x = int(np.median(x_coords))
         
-        # 创建米尺掩码坐标（中位数左右200px）
+        # 计算数字区域的中位数坐标
+        y_coords = [digit['center_y'] for digit in digits_info]
+        median_y = int(np.median(y_coords))
+        
+        # 创建双重掩码：米尺区域 + 数字区域
         h, w = image.shape[:2]
         mask_left = max(0, median_x - 200)
         mask_right = min(w, median_x + 200)
+        
+        # 数字区域掩码范围
+        digit_mask_left = max(0, median_x - 170)
+        digit_mask_right = min(w, median_x + 170)
+        digit_mask_top = max(0, median_y - 250)
+        digit_mask_bottom = min(h, median_y + 250)
         
         # 找到最顶部的数字作为深度参考
         top_digit = min(digits_info, key=lambda d: d['y'])
@@ -111,8 +123,13 @@ class RulerDetector:
             'confidence': 0.9,
             'detection_method': 'digit_detection',
             'median_x': median_x,
+            'median_y': median_y,
             'mask_left': mask_left,
             'mask_right': mask_right,
+            'digit_mask_left': digit_mask_left,
+            'digit_mask_right': digit_mask_right,
+            'digit_mask_top': digit_mask_top,
+            'digit_mask_bottom': digit_mask_bottom,
             'top_digit_value': top_digit['value'],
             'top_digit_y': top_digit['y'],
             'detected_digits': digits_info
@@ -120,7 +137,7 @@ class RulerDetector:
     
     def _detect_scale_digits_enhanced(self, image: np.ndarray) -> List[dict]:
         """
-        优化的刻度数字检测 - 更快更准确
+        使用OCR检测米尺刻度数字 (0, 10, 20, 30, ..., 120)
         
         Args:
             image: 输入图像
@@ -128,55 +145,28 @@ class RulerDetector:
         Returns:
             List[dict]: 检测到的数字信息列表
         """
-        # 只在图像右侧区域搜索米尺（通常米尺在右边）
         h, w = image.shape[:2]
-        roi_x_start = max(0, w - 300)  # 只检测右边300像素
-        roi = image[:, roi_x_start:]
-        
-        # 转换为灰度图
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        
-        # 简化的图像预处理
-        # 增强对比度
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4,4))
-        enhanced = clahe.apply(gray)
-        
-        # 二值化 - 使用OTSU自动阈值
-        _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        
-        # 反转图像（使文字为白色，背景为黑色）
-        binary_inv = cv2.bitwise_not(binary)
-        
-        # 适度放大 - 减少计算量
-        height, width = binary_inv.shape
-        scale_factor = 2  # 固定2倍放大
-        resized = cv2.resize(binary_inv, (width * scale_factor, height * scale_factor), 
-                           interpolation=cv2.INTER_CUBIC)
         
         try:
-            # 简单的数字检测配置
-            config = r'--psm 6 -c tessedit_char_whitelist=0123456789'
-            
-            # 获取文本和位置数据
-            data = pytesseract.image_to_data(resized, config=config, output_type=pytesseract.Output.DICT)
-            
-            # 提取米尺刻度数字：0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120
-            valid_digits = []
-            for i in range(len(data['text'])):
-                text = data['text'][i].strip()
-                if text.isdigit():
-                    num = int(text)
-                    # 米尺刻度：10的倍数，0-120cm范围
-                    if 0 <= num <= 120 and num % 10 == 0:
-                        # 转换坐标到原图
-                        x = data['left'][i] // scale_factor + roi_x_start
-                        y = data['top'][i] // scale_factor
-                        w = data['width'][i] // scale_factor
-                        h = data['height'][i] // scale_factor
-                        confidence = data['conf'][i]
-                        
-                        # 基本过滤
-                        if confidence > 30:
+            # 尝试使用 EasyOCR
+            if 'easyocr' in globals():
+                reader = easyocr.Reader(['en'], gpu=False)
+                results = reader.readtext(image, allowlist='0123456789')
+                
+                valid_digits = []
+                for (bbox, text, confidence) in results:
+                    if text.isdigit() and confidence > 0.5:
+                        num = int(text)
+                        # 只保留米尺刻度：10的倍数，0-120cm
+                        if 0 <= num <= 120 and num % 10 == 0:
+                            # 计算边界框中心
+                            x_coords = [point[0] for point in bbox]
+                            y_coords = [point[1] for point in bbox]
+                            x = int(min(x_coords))
+                            y = int(min(y_coords))
+                            w = int(max(x_coords) - min(x_coords))
+                            h = int(max(y_coords) - min(y_coords))
+                            
                             valid_digits.append({
                                 'value': num,
                                 'x': x,
@@ -188,21 +178,51 @@ class RulerDetector:
                                 'confidence': confidence
                             })
             
-            # 去除重复检测
-            valid_digits = self._remove_duplicate_digits(valid_digits)
+            else:
+                # 使用 Tesseract (回退)
+                roi_x_start = max(0, w - 300)
+                roi = image[:, roi_x_start:]
+                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                binary_inv = cv2.bitwise_not(binary)
+                resized = cv2.resize(binary_inv, (binary_inv.shape[1] * 2, binary_inv.shape[0] * 2))
+                
+                config = r'--psm 6 -c tessedit_char_whitelist=0123456789'
+                data = pytesseract.image_to_data(resized, config=config, output_type=pytesseract.Output.DICT)
+                
+                valid_digits = []
+                for i in range(len(data['text'])):
+                    text = data['text'][i].strip()
+                    if text.isdigit():
+                        num = int(text)
+                        if 0 <= num <= 120 and num % 10 == 0 and data['conf'][i] > 30:
+                            x = data['left'][i] // 2 + roi_x_start
+                            y = data['top'][i] // 2
+                            w = data['width'][i] // 2
+                            h = data['height'][i] // 2
+                            
+                            valid_digits.append({
+                                'value': num,
+                                'x': x,
+                                'y': y,
+                                'width': w,
+                                'height': h,
+                                'center_x': x + w//2,
+                                'center_y': y + h//2,
+                                'confidence': data['conf'][i]
+                            })
             
-            # 按Y坐标排序（从上到下）
+            # 去除重复
+            valid_digits = self._remove_duplicate_digits(valid_digits)
             valid_digits.sort(key=lambda d: d['y'])
             
-            # 调试信息
-            all_text = [data['text'][i].strip() for i in range(len(data['text'])) if data['text'][i].strip()]
-            print(f"OCR检测到所有文本: {all_text}")
-            print(f"有效刻度数字: {[d['value'] for d in valid_digits]}")
+            if valid_digits:
+                print(f"检测到刻度数字: {[d['value'] for d in valid_digits]}")
             
             return valid_digits
             
         except Exception as e:
-            print(f"OCR检测错误: {e}")
+            print(f"数字检测错误: {e}")
             return []
     
     def _remove_duplicate_digits(self, digits: List[dict]) -> List[dict]:
@@ -642,14 +662,21 @@ class RulerDetector:
         # 创建掩码，标记米尺区域
         mask = np.zeros(image.shape[:2], dtype=np.uint8)
         
-        # 如果是数字检测方法，使用简化的矩形掩码
+        # 如果是数字检测方法，使用双重掩码保证
         if ruler_info.get('detection_method') == 'digit_detection':
             h, w = image.shape[:2]
+            
+            # 1. 米尺区域掩码（垂直条状）
             left = ruler_info['mask_left']
             right = ruler_info['mask_right']
-            
-            # 创建垂直条状掩码
             mask[:, left:right] = 255
+            
+            # 2. 数字区域掩码（矩形区域）
+            digit_left = ruler_info['digit_mask_left']
+            digit_right = ruler_info['digit_mask_right']
+            digit_top = ruler_info['digit_mask_top']
+            digit_bottom = ruler_info['digit_mask_bottom']
+            mask[digit_top:digit_bottom, digit_left:digit_right] = 255
         else:
             # 使用原有的线条掩码方法
             x1, y1, x2, y2 = ruler_info['line_coords']
@@ -678,10 +705,17 @@ class RulerDetector:
             median_x = ruler_info['median_x']
             cv2.line(result, (median_x, 0), (median_x, image.shape[0]), (255, 0, 0), 2)
             
-            # 绘制掩码区域
+            # 绘制米尺掩码区域（红色）
             left = ruler_info['mask_left']
             right = ruler_info['mask_right']
             cv2.rectangle(result, (left, 0), (right, image.shape[0]), (0, 0, 255), 2)
+            
+            # 绘制数字掩码区域（蓝色）
+            digit_left = ruler_info['digit_mask_left']
+            digit_right = ruler_info['digit_mask_right']
+            digit_top = ruler_info['digit_mask_top']
+            digit_bottom = ruler_info['digit_mask_bottom']
+            cv2.rectangle(result, (digit_left, digit_top), (digit_right, digit_bottom), (255, 0, 0), 2)
             
             # 添加深度参考信息
             cv2.putText(result, f"Top: {ruler_info['top_digit_value']}cm", 
