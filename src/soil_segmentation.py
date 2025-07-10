@@ -250,79 +250,29 @@ class SoilSegmentation:
         return bright_mask
     
     def _detect_tools_region(self, image: np.ndarray) -> np.ndarray:
-        """检测工具区域（小刀、锤子等竖直放置的工具） - 主要在图像底部"""
+        """检测金属异物区域 - 简化版本，只检测明显的金属色"""
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         h, w = image.shape[:2]
         
-        # 重点检测底部区域（工具最可能出现的地方）
-        bottom_region_height = int(h * 0.4)  # 底部40%区域
-        bottom_region = image[h - bottom_region_height:, :]
-        bottom_hsv = hsv[h - bottom_region_height:, :]
+        # 只检测明显的金属色（银色/灰色金属）
+        lower_metal = np.array([0, 0, 180], dtype=np.uint8)  # 更亮的金属色
+        upper_metal = np.array([180, 30, 255], dtype=np.uint8)
+        metal_mask = cv2.inRange(hsv, lower_metal, upper_metal)
         
-        # 1. 检测金属工具的典型颜色
-        
-        # 银色/灰色金属（刀具、锤子头）
-        lower_metal = np.array([0, 0, 120], dtype=np.uint8)
-        upper_metal = np.array([180, 40, 220], dtype=np.uint8)
-        metal_mask = cv2.inRange(bottom_hsv, lower_metal, upper_metal)
-        
-        # 暗灰色金属（鉄制工具）
-        lower_dark_metal = np.array([0, 0, 60], dtype=np.uint8)
-        upper_dark_metal = np.array([180, 60, 140], dtype=np.uint8)
-        dark_metal_mask = cv2.inRange(bottom_hsv, lower_dark_metal, upper_dark_metal)
-        
-        # 黄色/棕色工具手柄
-        lower_brown = np.array([8, 50, 50], dtype=np.uint8)
-        upper_brown = np.array([25, 255, 200], dtype=np.uint8)
-        brown_mask = cv2.inRange(bottom_hsv, lower_brown, upper_brown)
-        
-        # 黑色工具手柄
-        lower_black = np.array([0, 0, 0], dtype=np.uint8)
-        upper_black = np.array([180, 255, 60], dtype=np.uint8)
-        black_mask = cv2.inRange(bottom_hsv, lower_black, upper_black)
-        
-        # 组合所有工具颜色
-        tools_mask = cv2.bitwise_or(metal_mask, dark_metal_mask)
-        tools_mask = cv2.bitwise_or(tools_mask, brown_mask)
-        tools_mask = cv2.bitwise_or(tools_mask, black_mask)
-        
-        # 2. 形态学操作去除噪声
+        # 简单的形态学操作去除小噪声
         kernel = np.ones((3, 3), np.uint8)
-        tools_mask = cv2.morphologyEx(tools_mask, cv2.MORPH_OPEN, kernel)
+        metal_mask = cv2.morphologyEx(metal_mask, cv2.MORPH_OPEN, kernel)
         
-        kernel = np.ones((5, 5), np.uint8)
-        tools_mask = cv2.morphologyEx(tools_mask, cv2.MORPH_CLOSE, kernel)
-        
-        # 3. 根据形状特征过滤工具候选区域
-        contours, _ = cv2.findContours(tools_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        filtered_tools_mask = np.zeros_like(tools_mask)
+        # 过滤掉太小的区域
+        contours, _ = cv2.findContours(metal_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filtered_mask = np.zeros_like(metal_mask)
         
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > 300:  # 过滤小区域
-                # 检查形状特征
-                rect = cv2.minAreaRect(contour)
-                width, height = rect[1]
-                
-                if width > 0 and height > 0:
-                    aspect_ratio = max(width, height) / min(width, height)
-                    
-                    # 工具通常有一定的长宽比（竖直放置的刀、锤子）
-                    if 1.5 <= aspect_ratio <= 10:
-                        # 检查是否竖直放置（高度大于宽度）
-                        angle = rect[2]
-                        if angle < -45:
-                            angle += 90
-                        
-                        # 接近垂直放置的工具
-                        if abs(angle) < 30:  # 垂直放置误差在±30度内
-                            cv2.fillPoly(filtered_tools_mask, [contour], 255)
+            if area > 500:  # 只过滤明显的金属异物
+                cv2.fillPoly(filtered_mask, [contour], 255)
         
-        # 4. 创建完整尺寸的掩码（只有底部区域有工具）
-        full_tools_mask = np.zeros((h, w), dtype=np.uint8)
-        full_tools_mask[h - bottom_region_height:, :] = filtered_tools_mask
-        
-        return full_tools_mask
+        return filtered_mask
     
     def _detect_pure_black_shadows(self, image: np.ndarray) -> np.ndarray:
         """检测纯黑色阴影区域（可选去除）"""
