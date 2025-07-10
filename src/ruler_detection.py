@@ -6,7 +6,7 @@ import re
 try:
     import easyocr
     OCR_AVAILABLE = True
-    print("使用 EasyOCR 进行数字检测")
+    print("Utilisation d'EasyOCR pour la détection des chiffres")
 except ImportError:
     try:
         import pytesseract
@@ -24,15 +24,15 @@ except ImportError:
             if os.path.exists(path):
                 pytesseract.pytesseract.tesseract_cmd = path
                 tesseract_found = True
-                print(f"找到 Tesseract: {path}")
+                print(f"Tesseract trouvé: {path}")
                 break
         
         OCR_AVAILABLE = tesseract_found
         if not tesseract_found:
-            print("警告: 未找到 OCR 引擎")
+            print("Avertissement: OCR engine non trouvé")
     except ImportError:
         OCR_AVAILABLE = False
-        print("未安装 OCR 引擎")
+        print("OCR engine non installé")
 
 class RulerDetector:
     """Ruler Detector - Detect the ruler in the image and give the pixel/cm ratio"""
@@ -217,12 +217,12 @@ class RulerDetector:
             valid_digits.sort(key=lambda d: d['y'])
             
             if valid_digits:
-                print(f"检测到刻度数字: {[d['value'] for d in valid_digits]}")
-            
+                print(f"Traitement des chiffres détectés: {[d['value'] for d in valid_digits]}")
+
             return valid_digits
             
         except Exception as e:
-            print(f"数字检测错误: {e}")
+            print(f"Erreur de détection des chiffres: {e}")
             return []
     
     def _remove_duplicate_digits(self, digits: List[dict]) -> List[dict]:
@@ -286,8 +286,8 @@ class RulerDetector:
                     best_ratio = pixel_distance / cm_distance
         
         if best_ratio is not None:
-            print(f"计算得到比例: {best_ratio:.2f} 像素/厘米")
-        
+            print(f"Calculer le rapport: {best_ratio:.2f} pixels/cm")
+
         return best_ratio
     
     def _detect_ruler_by_morphology(self, image: np.ndarray) -> Optional[dict]:

@@ -1,6 +1,6 @@
 ﻿# 数据目录
 data/
-tests/data
+tests/
 
 # Python 缓存
 __pycache__/
