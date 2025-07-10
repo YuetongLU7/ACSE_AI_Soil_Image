@@ -63,7 +63,6 @@ class SoilImagePreprocessor:
             ruler_mask = None
         else:
             ruler_mask = self.ruler_detector.extract_ruler_region(image, ruler_info)
-            print(f"Successfully detected ruler，scale ratio: {ruler_info['scale_ratio']:.2f} pixel/cm")
         
         # 步骤2: 土壤区域分割和物体移除
         segmentation_result = self.soil_segmentation.process_image(
