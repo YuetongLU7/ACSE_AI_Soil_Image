@@ -63,15 +63,15 @@ class SoilImagePreprocessor:
             ruler_mask = None
         else:
             ruler_mask = self.ruler_detector.extract_ruler_region(image, ruler_info)
-        
-        # 步骤2: 土壤区域分割和物体移除
+
+        # Step 2: Soil segmentation and object removal
         segmentation_result = self.soil_segmentation.process_image(
             image, 
             ruler_mask, 
             mask_type=self.config['preprocessing']['soil_segmentation']['mask_type']
         )
         
-        # 收集结果
+        # Reserve results
         result = {
             'image_name': image_name,
             'original_image': image,
