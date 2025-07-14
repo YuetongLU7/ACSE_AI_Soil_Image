@@ -376,6 +376,8 @@ class SoilImagePreprocessor:
                     problem_type = "Trop de zones d'ombre"
                 elif "Connectivité du masque" in issue:
                     problem_type = "Connectivité du masque insuffisante"
+                elif "Détection du mètre ruban échouée" in issue:
+                    problem_type = "Échec de détection du mètre ruban"
                 else:
                     problem_type = "Autres problèmes"
 

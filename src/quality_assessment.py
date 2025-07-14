@@ -24,7 +24,7 @@ class ImageQualityAssessment:
         self.max_shadow_ratio = self.config.get('max_shadow_ratio', 0.6)  # 允许更多阴影
         self.min_mask_connectivity = self.config.get('min_mask_connectivity', 0.3)  # 降低连通性要求
         
-    def assess_image_quality(self, image: np.ndarray, soil_mask: np.ndarray) -> Dict:
+    def assess_image_quality(self, image: np.ndarray, soil_mask: np.ndarray, ruler_info: Optional[Dict] = None) -> Dict:
         """
         评估图像和土壤掩码的整体质量
         
@@ -61,6 +61,12 @@ class ImageQualityAssessment:
         
         # 检查质量问题
         issues = []
+        
+        # 检查米尺检测失败
+        if ruler_info is None:
+            issues.append("Détection du mètre ruban échouée: impossible de détecter les chiffres")
+        elif not ruler_info.get('ruler_detected', False):
+            issues.append("Détection du mètre ruban échouée: aucun mètre ruban détecté")
         
         if soil_coverage < self.min_soil_coverage:
             issues.append(f"Couverture sol trop faible: {soil_coverage:.2%} < {self.min_soil_coverage:.2%}")
@@ -254,7 +260,8 @@ class ImageQualityAssessment:
             # 评估质量
             quality_assessment = self.assess_image_quality(
                 result['original_image'],
-                result['soil_mask']
+                result['soil_mask'],
+                result.get('ruler_info')
             )
             
             # 添加质量信息到结果中
