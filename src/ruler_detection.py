@@ -154,7 +154,12 @@ class RulerDetector:
                 if self._ocr_reader is None:
                     # 只在第一次使用时初始化
                     self._ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-                results = self._ocr_reader.readtext(image, allowlist='0123456789')
+                
+                try:
+                    results = self._ocr_reader.readtext(image, allowlist='0123456789')
+                except Exception as ocr_error:
+                    print(f"EasyOCR failed for this image: {ocr_error}")
+                    return []
                 
                 valid_digits = []
                 for (bbox, text, confidence) in results:
