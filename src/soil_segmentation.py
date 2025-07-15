@@ -1,412 +1,324 @@
 import cv2
 import numpy as np
 from typing import List, Tuple, Optional
+from skimage import feature, segmentation, measure
+from scipy import ndimage
 
-class SoilSegmentation:
-    """土壤区域分割器 - 分离土壤区域并移除非土壤物体"""
+class MorphologicalSoilSegmentation:
+    """Morphological and texture-based soil segmentation"""
     
     def __init__(self):
         pass
-        
     
-    def segment_soil_area(self, image: np.ndarray, ruler_mask: np.ndarray = None) -> np.ndarray:
+    def segment_soil_area(self, image: np.ndarray, ruler_mask: np.ndarray = None, 
+                         upper_boundary: int = None, debug: bool = False) -> np.ndarray:
         """
-        基于排除法分割土壤区域：去除天空、植被、米尺等非土壤区域
+        Segment soil areas based on morphological features
         
         Args:
-            image: 输入图像
-            ruler_mask: 米尺掩码（可选），如果提供则直接使用，否则自动检测
+            image: Input image
+            ruler_mask: Ruler mask
+            upper_boundary: Upper boundary y-coordinate
+            debug: Whether to return debug information
             
         Returns:
-            np.ndarray: 土壤区域掩码
+            Soil area mask or debug information dictionary
         """
         h, w = image.shape[:2]
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         
-        # 创建初始掩码（全部为土壤）
+        # Create initial mask
         soil_mask = np.ones((h, w), dtype=np.uint8) * 255
+        debug_masks = {} if debug else None
         
-        # 1. 排除天空区域（蓝色，通常在上部）
-        sky_mask = self._detect_sky_region_enhanced(image)
+        # 1. Upper boundary filtering
+        if upper_boundary is not None and 0 <= upper_boundary < h:
+            print(f"Application du masque de limite supérieure: y < {upper_boundary}")
+            upper_boundary_mask = np.zeros((h, w), dtype=np.uint8)
+            upper_boundary_mask[:upper_boundary, :] = 255
+            soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(upper_boundary_mask))
+            if debug: debug_masks['upper_boundary'] = upper_boundary_mask
+        
+        # 2. Detect sky (large uniform regions)
+        sky_mask = self._detect_sky_morphological(image)
         soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(sky_mask))
+        if debug: debug_masks['sky'] = sky_mask
         
-        # 2. 排除植被区域（绿色）
-        vegetation_mask = self._detect_vegetation_region(hsv)
+        # 3. Detect vegetation (linear texture features)
+        vegetation_mask = self._detect_vegetation_morphological(image)
         soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(vegetation_mask))
+        if debug: debug_masks['vegetation'] = vegetation_mask
         
-        # 3. 排除米尺区域（使用传入的米尺掩码）
+        # 4. Detect ruler
         if ruler_mask is not None:
             soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(ruler_mask))
-        else:
-            # 如果没有传入米尺掩码，使用原有的检测方法
-            detected_ruler_mask = self._detect_ruler_region(image)
-            soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(detected_ruler_mask))
+            if debug: debug_masks['ruler'] = ruler_mask
         
-        # 4. 排除极亮区域（过曝光）
-        bright_mask = self._detect_overexposed_region(image)
-        soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(bright_mask))
+        # 5. Tool detection removed (to avoid soil misclassification)
         
-        # 5. 排除工具区域（底部竖直放置的小刀、锤子等）
-        tools_mask = self._detect_tools_region(image)
-        soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(tools_mask))
+        # 6. Optimize soil regions (preserve patch characteristics)
+        soil_mask = self._optimize_soil_regions(soil_mask, image)
         
-        # 6. 可选：排除纯黑色阴影区域（根据需要决定是否启用）
-        # shadow_mask = self._detect_pure_black_shadows(image)
-        # soil_mask = cv2.bitwise_and(soil_mask, cv2.bitwise_not(shadow_mask))
-        
-        # 轻微的形态学操作去除小噪声（保留土壤阴影、根系和石头）
-        kernel = np.ones((3, 3), np.uint8)
-        soil_mask = cv2.morphologyEx(soil_mask, cv2.MORPH_OPEN, kernel)
-        soil_mask = cv2.morphologyEx(soil_mask, cv2.MORPH_CLOSE, kernel)
+        if debug:
+            return {
+                'final_soil_mask': soil_mask,
+                'debug_masks': debug_masks
+            }
         
         return soil_mask
     
-    def _detect_sky_region_enhanced(self, image: np.ndarray) -> np.ndarray:
-        """增强的天空区域检测 - 重点过滤上半部分的天空和杂物"""
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        h, w = image.shape[:2]
+    def _detect_sky_morphological(self, image: np.ndarray) -> np.ndarray:
+        """
+        Detect sky based on morphology: large uniform bright regions
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
         
-        # 1. 检测蓝色天空
-        lower_blue_sky = np.array([100, 50, 80], dtype=np.uint8)
-        upper_blue_sky = np.array([130, 255, 255], dtype=np.uint8)
-        blue_sky_mask = cv2.inRange(hsv, lower_blue_sky, upper_blue_sky)
+        # 1. Detect bright regions (not too strict)
+        _, bright_regions = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
         
-        # 2. 检测浅蓝色天空
-        lower_light_blue = np.array([90, 30, 150], dtype=np.uint8)
-        upper_light_blue = np.array([120, 200, 255], dtype=np.uint8)
-        light_blue_mask = cv2.inRange(hsv, lower_light_blue, upper_light_blue)
+        # 2. Calculate local variance to detect uniformity
+        # Sky regions should have small variance (uniform color)
+        kernel_size = 15
+        kernel = np.ones((kernel_size, kernel_size), np.float32) / (kernel_size * kernel_size)
         
-        # 3. 检测白色/灰色天空（阴天）
-        lower_white_sky = np.array([0, 0, 200], dtype=np.uint8)
-        upper_white_sky = np.array([180, 40, 255], dtype=np.uint8)
-        white_sky_mask = cv2.inRange(hsv, lower_white_sky, upper_white_sky)
+        # Calculate local mean
+        local_mean = cv2.filter2D(gray.astype(np.float32), -1, kernel)
         
-        # 4. 检测灰色天空
-        lower_gray_sky = np.array([0, 0, 150], dtype=np.uint8)
-        upper_gray_sky = np.array([180, 30, 200], dtype=np.uint8)
-        gray_sky_mask = cv2.inRange(hsv, lower_gray_sky, upper_gray_sky)
+        # Calculate local variance
+        local_var = cv2.filter2D((gray.astype(np.float32) - local_mean)**2, -1, kernel)
         
-        # 组合所有天空掩码
-        sky_mask = cv2.bitwise_or(blue_sky_mask, light_blue_mask)
-        sky_mask = cv2.bitwise_or(sky_mask, white_sky_mask)
-        sky_mask = cv2.bitwise_or(sky_mask, gray_sky_mask)
+        # Low variance regions (uniform regions)
+        uniform_mask = (local_var < 200).astype(np.uint8) * 255
         
-        # 形态学操作
-        kernel = np.ones((3, 3), np.uint8)
-        sky_mask = cv2.morphologyEx(sky_mask, cv2.MORPH_OPEN, kernel)
+        # 3. Combine brightness and uniformity
+        sky_candidate = cv2.bitwise_and(bright_regions, uniform_mask)
         
-        kernel = np.ones((7, 7), np.uint8)
-        sky_mask = cv2.morphologyEx(sky_mask, cv2.MORPH_CLOSE, kernel)
+        # 4. Morphological operations: remove small regions, keep large areas
+        # Opening to remove small noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
+        sky_candidate = cv2.morphologyEx(sky_candidate, cv2.MORPH_OPEN, kernel)
         
-        # 主要在图像上半部分寻找天空，但也考虑中间部分
+        # Closing to fill holes
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (20, 20))
+        sky_candidate = cv2.morphologyEx(sky_candidate, cv2.MORPH_CLOSE, kernel)
+        
+        # 5. Region filtering: keep only large area regions
+        contours, _ = cv2.findContours(sky_candidate, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        sky_mask = np.zeros_like(gray)
+        
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            # Sky should be large area regions
+            if area > (h * w) * 0.05:  # At least 5% of image area
+                # Check region compactness (sky is usually continuous large blocks)
+                perimeter = cv2.arcLength(contour, True)
+                if perimeter > 0:
+                    compactness = (4 * np.pi * area) / (perimeter * perimeter)
+                    if compactness > 0.1:  # Relatively regular shape
+                        cv2.fillPoly(sky_mask, [contour], 255)
+        
+        # 6. Mainly look for sky in upper part
         sky_mask_filtered = np.zeros_like(sky_mask)
         sky_mask_filtered[:int(h*0.7), :] = sky_mask[:int(h*0.7), :]
         
         return sky_mask_filtered
     
-    def _detect_vegetation_region(self, hsv: np.ndarray) -> np.ndarray:
-        """检测植被区域（绿色） - 增强版"""
-        # 多种绿色植被的HSV范围
+    def _detect_vegetation_morphological(self, image: np.ndarray) -> np.ndarray:
+        """
+        Detect vegetation based on morphology: linear, striped textures
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         
-        # 浅绿色植被
-        lower_light_green = np.array([35, 30, 30], dtype=np.uint8)
-        upper_light_green = np.array([85, 255, 255], dtype=np.uint8)
-        light_green_mask = cv2.inRange(hsv, lower_light_green, upper_light_green)
+        # 1. Color pre-filtering (only as auxiliary, not main criterion)
+        # Detect green tones, but with relatively loose range
+        lower_green = np.array([35, 30, 20], dtype=np.uint8)
+        upper_green = np.array([85, 255, 255], dtype=np.uint8)
+        green_hint = cv2.inRange(hsv, lower_green, upper_green)
         
-        # 深绿色植被
-        lower_dark_green = np.array([40, 50, 20], dtype=np.uint8)
-        upper_dark_green = np.array([80, 255, 200], dtype=np.uint8)
-        dark_green_mask = cv2.inRange(hsv, lower_dark_green, upper_dark_green)
+        # 2. Linear texture detection
+        vegetation_texture = self._detect_linear_texture(gray)
         
-        # 黄绿色植被（干草等）
-        lower_yellow_green = np.array([25, 40, 40], dtype=np.uint8)
-        upper_yellow_green = np.array([40, 255, 255], dtype=np.uint8)
-        yellow_green_mask = cv2.inRange(hsv, lower_yellow_green, upper_yellow_green)
+        # 3. Edge density detection (vegetation has many edges)
+        edges = cv2.Canny(gray, 50, 150)
         
-        # 合并所有植被掩码
-        vegetation_mask = cv2.bitwise_or(light_green_mask, dark_green_mask)
-        vegetation_mask = cv2.bitwise_or(vegetation_mask, yellow_green_mask)
+        # Calculate local edge density
+        kernel_size = 10
+        kernel = np.ones((kernel_size, kernel_size), np.float32)
+        edge_density = cv2.filter2D(edges.astype(np.float32), -1, kernel) / (kernel_size * kernel_size * 255)
         
-        # 形态学操作去除噪声并填充空洞
-        kernel = np.ones((3, 3), np.uint8)
+        # High edge density regions
+        high_edge_density = (edge_density > 0.3).astype(np.uint8) * 255
+        
+        # 4. Gabor filter for striped texture detection
+        gabor_response = self._apply_gabor_filters(gray)
+        
+        # 5. Combine all features
+        # Vegetation = green hint AND (linear texture OR high edge density OR Gabor response)
+        texture_features = cv2.bitwise_or(vegetation_texture, high_edge_density)
+        texture_features = cv2.bitwise_or(texture_features, gabor_response)
+        
+        vegetation_mask = cv2.bitwise_and(green_hint, texture_features)
+        
+        # 6. Morphological optimization
+        # Opening to remove noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         vegetation_mask = cv2.morphologyEx(vegetation_mask, cv2.MORPH_OPEN, kernel)
         
-        kernel = np.ones((5, 5), np.uint8)
+        # Closing to connect nearby regions
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         vegetation_mask = cv2.morphologyEx(vegetation_mask, cv2.MORPH_CLOSE, kernel)
         
         return vegetation_mask
     
-    def _detect_ruler_region(self, image: np.ndarray) -> np.ndarray:
-        """基于形状和纹理特征检测米尺区域 - 更严格的检测"""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        h, w = gray.shape
+    def _detect_linear_texture(self, gray: np.ndarray) -> np.ndarray:
+        """
+        Detect linear texture (grass stripe characteristics)
+        """
+        # Use linear structural elements in different directions
+        linear_masks = []
         
-        # 1. 边缘检测 - 找到强边缘
-        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        # Vertical linear structural element (detect vertical grass)
+        kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 7))
+        opening_v = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel_v)
+        linear_v = cv2.subtract(gray, opening_v)
         
-        # 2. 霍夫直线检测 - 更严格的参数
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=80,  # 提高阈值
-                               minLineLength=300, maxLineGap=20)  # 要求更长的线段
+        # Horizontal linear structural element
+        kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 1))
+        opening_h = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel_h)
+        linear_h = cv2.subtract(gray, opening_h)
         
-        ruler_mask = np.zeros_like(gray)
+        # Diagonal linear structural element
+        kernel_d1 = np.array([[1,0,0,0,0,0,1],
+                              [0,1,0,0,0,1,0],
+                              [0,0,1,0,1,0,0],
+                              [0,0,0,1,0,0,0],
+                              [0,0,1,0,1,0,0],
+                              [0,1,0,0,0,1,0],
+                              [1,0,0,0,0,0,1]], dtype=np.uint8)
         
-        if lines is not None:
-            # 3. 分析每条直线，寻找米尺候选
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                length = np.sqrt((x2-x1)**2 + (y2-y1)**2)
-                
-                # 只考虑很长的线段
-                if length > 400:  # 提高长度要求
-                    # 计算线段方向
-                    angle = np.arctan2(y2-y1, x2-x1) * 180 / np.pi
-                    
-                    # 垂直或水平方向的长线段
-                    if abs(angle) < 10 or abs(angle) > 170 or abs(abs(angle) - 90) < 10:  # 更严格的角度要求
-                        # 在线段周围创建矩形区域
-                        thickness = 40  # 增加厚度以确保覆盖米尺
-                        
-                        # 计算垂直于线段的方向
-                        if abs(angle) < 10 or abs(angle) > 170:  # 水平线
-                            # 创建水平矩形
-                            y_start = max(0, min(y1, y2) - thickness//2)
-                            y_end = min(h, max(y1, y2) + thickness//2)
-                            x_start = max(0, min(x1, x2) - 20)
-                            x_end = min(w, max(x1, x2) + 20)
-                        else:  # 垂直线
-                            # 创建垂直矩形
-                            x_start = max(0, min(x1, x2) - thickness//2)
-                            x_end = min(w, max(x1, x2) + thickness//2)
-                            y_start = max(0, min(y1, y2) - 20)
-                            y_end = min(h, max(y1, y2) + 20)
-                        
-                        # 提取候选区域
-                        candidate_region = gray[y_start:y_end, x_start:x_end]
-                        
-                        if candidate_region.size > 0:
-                            # 4. 检测刻度纹理
-                            if self._has_ruler_texture(candidate_region):
-                                ruler_mask[y_start:y_end, x_start:x_end] = 255
+        opening_d1 = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel_d1)
+        linear_d1 = cv2.subtract(gray, opening_d1)
         
-        # 5. 形态学操作连接相邻区域
-        kernel = np.ones((7, 7), np.uint8)
-        ruler_mask = cv2.morphologyEx(ruler_mask, cv2.MORPH_CLOSE, kernel)
+        # Combine all directional linear features
+        linear_texture = cv2.bitwise_or(linear_v, linear_h)
+        linear_texture = cv2.bitwise_or(linear_texture, linear_d1)
         
-        # 6. 更严格的最终形状过滤
-        contours, _ = cv2.findContours(ruler_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        filtered_mask = np.zeros_like(ruler_mask)
+        # Thresholding
+        _, linear_texture = cv2.threshold(linear_texture, 20, 255, cv2.THRESH_BINARY)
         
-        for contour in contours:
-            rect = cv2.minAreaRect(contour)
-            width, height = rect[1]
-            if width > 0 and height > 0:
-                aspect_ratio = max(width, height) / min(width, height)
-                area = cv2.contourArea(contour)
-                # 更严格的长宽比和面积要求
-                if aspect_ratio > 8 and 2000 < area < 100000:  # 更高的长宽比要求，更大的最小面积
-                    cv2.fillPoly(filtered_mask, [contour], 255)
-        
-        return filtered_mask
+        return linear_texture
     
-    def _has_ruler_texture(self, region: np.ndarray) -> bool:
-        """检测区域是否具有米尺的刻度纹理特征"""
-        if region.size == 0:
-            return False
+    def _apply_gabor_filters(self, gray: np.ndarray) -> np.ndarray:
+        """
+        Apply Gabor filters to detect directional textures
+        """
+        gabor_responses = []
+        
+        # Gabor filters at different angles
+        angles = [0, 30, 60, 90, 120, 150]
+        
+        for angle in angles:
+            # Create Gabor kernel
+            kernel = cv2.getGaborKernel((15, 15), 3, np.radians(angle), 
+                                       2*np.pi*0.5, 0.5, 0, ktype=cv2.CV_32F)
             
-        h, w = region.shape
+            # Apply filter
+            filtered = cv2.filter2D(gray, cv2.CV_8UC3, kernel)
+            gabor_responses.append(filtered)
         
-        # 检测垂直线条（刻度）
-        edges = cv2.Canny(region, 30, 100)
+        # Take maximum response across all directions
+        gabor_max = np.maximum.reduce(gabor_responses)
         
-        # 使用霍夫直线检测刻度线
-        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=10,
-                               minLineLength=min(h, w)//4, maxLineGap=3)
+        # Thresholding
+        _, gabor_binary = cv2.threshold(gabor_max, 30, 255, cv2.THRESH_BINARY)
         
-        if lines is None:
-            return False
-        
-        # 统计垂直线条数量
-        vertical_lines = 0
-        horizontal_lines = 0
-        
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            angle = np.arctan2(y2-y1, x2-x1) * 180 / np.pi
-            
-            if abs(abs(angle) - 90) < 20:  # 接近垂直
-                vertical_lines += 1
-            elif abs(angle) < 20 or abs(angle) > 160:  # 接近水平
-                horizontal_lines += 1
-        
-        # 米尺应该有多条垂直刻度线
-        return vertical_lines >= 3 or (vertical_lines >= 2 and horizontal_lines >= 1)
+        return gabor_binary
     
-    def _detect_overexposed_region(self, image: np.ndarray) -> np.ndarray:
-        """检测过曝光区域"""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # 检测极亮区域
-        _, bright_mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY)
-        
-        # 形态学操作去除噪声
-        kernel = np.ones((5, 5), np.uint8)
-        bright_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_OPEN, kernel)
-        
-        return bright_mask
+    def _detect_tools_morphological(self, image: np.ndarray) -> np.ndarray:
+        """
+        Tool detection removed - avoid soil misclassification
+        """
+        # Return empty mask
+        return np.zeros(image.shape[:2], dtype=np.uint8)
     
-    def _detect_tools_region(self, image: np.ndarray) -> np.ndarray:
-        """检测金属异物区域 - 简化版本，只检测明显的金属色"""
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-        h, w = image.shape[:2]
+    def _optimize_soil_regions(self, soil_mask: np.ndarray, image: np.ndarray) -> np.ndarray:
+        """
+        Optimize soil regions: preserve patch characteristics, remove small noise
+        """
+        # 1. Remove small isolated regions
+        contours, _ = cv2.findContours(soil_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        filtered_mask = np.zeros_like(soil_mask)
         
-        # 只检测明显的金属色（银色/灰色金属）
-        lower_metal = np.array([0, 0, 180], dtype=np.uint8)  # 更亮的金属色
-        upper_metal = np.array([180, 30, 255], dtype=np.uint8)
-        metal_mask = cv2.inRange(hsv, lower_metal, upper_metal)
-        
-        # 简单的形态学操作去除小噪声
-        kernel = np.ones((3, 3), np.uint8)
-        metal_mask = cv2.morphologyEx(metal_mask, cv2.MORPH_OPEN, kernel)
-        
-        # 过滤掉太小的区域
-        contours, _ = cv2.findContours(metal_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        filtered_mask = np.zeros_like(metal_mask)
+        total_area = soil_mask.shape[0] * soil_mask.shape[1]
         
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area > 500:  # 只过滤明显的金属异物
+            # Keep regions larger than 0.1% of total area
+            if area > total_area * 0.001:
                 cv2.fillPoly(filtered_mask, [contour], 255)
         
+        # 2. Slight closing operation to connect nearby soil patches
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        filtered_mask = cv2.morphologyEx(filtered_mask, cv2.MORPH_CLOSE, kernel)
+        
         return filtered_mask
-    
-    def _detect_pure_black_shadows(self, image: np.ndarray) -> np.ndarray:
-        """检测纯黑色阴影区域（可选去除）"""
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # 检测非常暗的区域
-        _, shadow_mask = cv2.threshold(gray, 30, 255, cv2.THRESH_BINARY_INV)
-        
-        # 形态学操作去除小噪声
-        kernel = np.ones((5, 5), np.uint8)
-        shadow_mask = cv2.morphologyEx(shadow_mask, cv2.MORPH_OPEN, kernel)
-        
-        # 过滤极小区域
-        contours, _ = cv2.findContours(shadow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        filtered_shadow_mask = np.zeros_like(shadow_mask)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > 100:  # 只保留较大的阴影区域
-                cv2.fillPoly(filtered_shadow_mask, [contour], 255)
-        
-        return filtered_shadow_mask
-    
-    def _detect_vertical_tools_in_bottom(self, image: np.ndarray) -> np.ndarray:
-        """检测底部竖直放置的工具（小刀、锤子等）"""
-        h, w = image.shape[:2]
-        
-        # 只检测底部区域
-        bottom_height = int(h * 0.3)
-        bottom_region = image[h - bottom_height:, :]
-        
-        if bottom_region.size == 0:
-            return np.zeros((h, w), dtype=np.uint8)
-        
-        gray = cv2.cvtColor(bottom_region, cv2.COLOR_BGR2GRAY)
-        
-        # 使用边缘检测找到工具轮廓
-        edges = cv2.Canny(gray, 50, 150)
-        
-        # 形态学操作连接边缘
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-        
-        # 查找轮廓
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        tools_mask = np.zeros_like(gray)
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if 500 <= area <= 20000:  # 工具大小范围
-                # 检查形状特征
-                rect = cv2.minAreaRect(contour)
-                width, height = rect[1]
-                
-                if width > 0 and height > 0:
-                    aspect_ratio = max(width, height) / min(width, height)
-                    
-                    # 工具通常有一定的长宽比且竖直放置
-                    if 2 <= aspect_ratio <= 8:
-                        angle = rect[2]
-                        if angle < -45:
-                            angle += 90
-                        
-                        # 检查是否竖直放置
-                        if abs(angle) < 25:  # 垂直放置误差在±25度内
-                            cv2.fillPoly(tools_mask, [contour], 255)
-        
-        # 创建完整尺寸的掩码
-        full_tools_mask = np.zeros((h, w), dtype=np.uint8)
-        full_tools_mask[h - bottom_height:, :] = tools_mask
-        
-        return full_tools_mask
-    
-    
     
     def apply_mask(self, image: np.ndarray, mask: np.ndarray, 
                    mask_type: str = 'transparent') -> np.ndarray:
         """
-        应用掩码到图像
+        Apply mask to image
         
         Args:
-            image: 输入图像
-            mask: 掩码图像
-            mask_type: 掩码类型 ('transparent' 或 'black')
+            image: Input image
+            mask: Mask image
+            mask_type: Mask type ('transparent' or 'black')
             
         Returns:
-            np.ndarray: 处理后的图像
+            np.ndarray: Processed image
         """
         if mask_type == 'transparent':
-            # 创建RGBA图像
+            # Create RGBA image
             if image.shape[2] == 3:
                 result = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
             else:
                 result = image.copy()
             
-            # 设置透明度
-            result[mask > 0, 3] = 0  # 完全透明
+            # Set transparency
+            result[mask > 0, 3] = 0  # Completely transparent
             
         elif mask_type == 'black':
             result = image.copy()
-            result[mask > 0] = [0, 0, 0]  # 设置为黑色
+            result[mask > 0] = [0, 0, 0]  # Set to black
             
         else:
-            raise ValueError(f"Unsupported mask_type: {mask_type}")
+            raise ValueError(f"Type de masque non supporté: {mask_type}")
         
         return result
     
     def process_image(self, image: np.ndarray, 
                      ruler_mask: Optional[np.ndarray] = None,
+                     upper_boundary: Optional[int] = None,
                      mask_type: str = 'transparent') -> dict:
         """
-        完整的图像处理流程
+        Complete image processing pipeline
         
         Args:
-            image: 输入图像
-            ruler_mask: 米尺区域掩码
-            mask_type: 掩码类型
+            image: Input image
+            ruler_mask: Ruler region mask
+            upper_boundary: Upper boundary y-coordinate (based on ruler 0 scale position)
+            mask_type: Mask type
             
         Returns:
-            dict: 处理结果
+            dict: Processing results
         """
-        # 分割土壤区域
-        soil_mask = self.segment_soil_area(image, ruler_mask)
+        # Segment soil areas
+        soil_mask = self.segment_soil_area(image, ruler_mask, upper_boundary)
         
-        # 创建去除掩码（非土壤区域）
+        # Create removal mask (non-soil areas)
         remove_mask = cv2.bitwise_not(soil_mask)
         
-        # 应用掩码
+        # Apply mask
         processed_image = self.apply_mask(image, remove_mask, mask_type)
         
         return {
@@ -415,3 +327,85 @@ class SoilSegmentation:
             'remove_mask': remove_mask,
             'detected_objects': []  # Initialize empty list for detected objects
         }
+    
+    def visualize_debug(self, debug_result: dict, save_path: str = None):
+        """
+        Visualize debug results
+        """
+        import matplotlib.pyplot as plt
+        
+        masks = debug_result['debug_masks']
+        final_mask = debug_result['final_soil_mask']
+        
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        axes = axes.ravel()
+        
+        # Show each detection step
+        titles = ['Limite Supérieure', 'Ciel', 'Végétation', 'Sol Final', 'Zones Supprimées', 'Réservé']
+        mask_keys = ['upper_boundary', 'sky', 'vegetation']
+        
+        for i, (key, title) in enumerate(zip(mask_keys, titles)):
+            if key in masks:
+                axes[i].imshow(masks[key], cmap='gray')
+                axes[i].set_title(title)
+                axes[i].axis('off')
+        
+        # Show final result
+        axes[3].imshow(final_mask, cmap='gray')
+        axes[3].set_title('Sol Final')
+        axes[3].axis('off')
+        
+        axes[4].imshow(255 - final_mask, cmap='gray')
+        axes[4].set_title('Zones Supprimées')
+        axes[4].axis('off')
+        
+        # Hide extra subplots
+        axes[5].axis('off')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        plt.show()
+        
+        # Print statistics
+        total_pixels = final_mask.shape[0] * final_mask.shape[1]
+        soil_pixels = np.sum(final_mask > 0)
+        soil_percentage = (soil_pixels / total_pixels) * 100
+        
+        print(f"\n=== Statistiques de Segmentation ===")
+        print(f"Pixels totaux: {total_pixels}")
+        print(f"Pixels de sol: {soil_pixels}")
+        print(f"Pourcentage de sol: {soil_percentage:.2f}%")
+        
+        for key, mask in masks.items():
+            removed_pixels = np.sum(mask > 0)
+            removed_percentage = (removed_pixels / total_pixels) * 100
+            print(f"{key} supprimé: {removed_pixels} ({removed_percentage:.2f}%)")
+
+
+# For compatibility, create an alias
+SoilSegmentation = MorphologicalSoilSegmentation
+
+
+# Usage example
+def test_morphological_segmentation():
+    """Test function"""
+    
+    # Create segmenter
+    segmenter = MorphologicalSoilSegmentation()
+    
+    # Load image
+    image = cv2.imread('your_image.jpg')
+    
+    # Run debug mode
+    debug_result = segmenter.segment_soil_area(image, debug=True)
+    
+    # Visualize results
+    segmenter.visualize_debug(debug_result)
+    
+    return debug_result
+
+# To use, call:
+# result = test_morphological_segmentation()

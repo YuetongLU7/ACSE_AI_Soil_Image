@@ -64,10 +64,16 @@ class SoilImagePreprocessor:
         else:
             ruler_mask = self.ruler_detector.extract_ruler_region(image, ruler_info)
 
-        # Step 2: Soil segmentation and object removal
+        # Step 2: Calculate upper boundary based on ruler 0 position
+        upper_boundary = None
+        if ruler_info is not None:
+            upper_boundary = self.ruler_detector.calculate_upper_boundary(ruler_info)
+        
+        # Step 3: Soil segmentation and object removal
         segmentation_result = self.soil_segmentation.process_image(
             image, 
             ruler_mask, 
+            upper_boundary,
             mask_type=self.config['preprocessing']['soil_segmentation']['mask_type']
         )
         
