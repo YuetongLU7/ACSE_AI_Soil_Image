@@ -149,7 +149,7 @@ class RulerDetector:
             try:
                 results = self._ocr_reader.readtext(image, allowlist='0123456789')
             except Exception as ocr_error:
-                print(f"EasyOCR failed for this image: {ocr_error}")
+                print(f"Échec EasyOCR pour cette image: {ocr_error}")
                 return []
             
             valid_digits = []
@@ -182,7 +182,7 @@ class RulerDetector:
             valid_digits.sort(key=lambda d: d['y'])
             
             if valid_digits:
-                print(f"Traitement des chiffres détectés: {[d['value'] for d in valid_digits]}")
+                print(f"Chiffres détectés: {[d['value'] for d in valid_digits]}")
 
             return valid_digits
             
@@ -251,9 +251,57 @@ class RulerDetector:
                     best_ratio = pixel_distance / cm_distance
         
         if best_ratio is not None:
-            print(f"Calculer le rapport: {best_ratio:.2f} pixels/cm")
+            print(f"Calcul du rapport: {best_ratio:.2f} pixels/cm")
 
         return best_ratio
+    
+    def calculate_upper_boundary(self, ruler_info: dict) -> Optional[int]:
+        """
+        根据米尺0刻度位置计算上边界，用于去除植被
+        
+        Args:
+            ruler_info: 米尺检测信息
+            
+        Returns:
+            int: 上边界的y坐标，如果无法计算则返回None
+        """
+        if not ruler_info or not ruler_info.get('ruler_detected', False):
+            return None
+            
+        detected_digits = ruler_info.get('detected_digits', [])
+        if not detected_digits:
+            return None
+            
+        # 查找是否直接检测到了0刻度
+        zero_digit = None
+        for digit in detected_digits:
+            if digit['value'] == 0:
+                zero_digit = digit
+                break
+        
+        if zero_digit is not None:
+            # 如果检测到0刻度，使用矩形框的上边界
+            upper_boundary = zero_digit['y']
+            print(f"Zéro détecté, utilisation de la limite supérieure: y={upper_boundary}")
+            return upper_boundary
+        else:
+            # 如果没有检测到0刻度，根据已知刻度推断0的位置
+            scale_ratio = ruler_info.get('scale_ratio')
+            if scale_ratio is None:
+                return None
+                
+            # 找到最顶部的刻度作为参考
+            top_digit = min(detected_digits, key=lambda d: d['center_y'])
+            top_value = top_digit['value']
+            top_center_y = top_digit['center_y']
+            
+            # 推断0刻度的中心位置
+            inferred_zero_y = top_center_y - (top_value * scale_ratio)
+            
+            # 由于0刻度印在刻度下方，直接使用推断的坐标作为上边界
+            upper_boundary = int(inferred_zero_y)
+            print(f"Position zéro inférée, utilisation des coordonnées: y={upper_boundary} (basé sur la graduation {top_value}cm)")
+            return upper_boundary
     
     def extract_ruler_region(self, image: np.ndarray, ruler_info: dict) -> np.ndarray:
         """从图像中提取米尺区域用于后续处理"""
@@ -321,6 +369,13 @@ class RulerDetector:
             # 添加深度参考信息
             cv2.putText(result, f"Top: {ruler_info['top_digit_value']}cm", 
                        (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            
+            # 绘制上边界线（如果可以计算）
+            upper_boundary = self.calculate_upper_boundary(ruler_info)
+            if upper_boundary is not None:
+                cv2.line(result, (0, upper_boundary), (image.shape[1], upper_boundary), (255, 255, 0), 3)
+                cv2.putText(result, f"Limite sup.: y={upper_boundary}", 
+                           (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
         else:
             # 使用原有的线条可视化
             x1, y1, x2, y2 = ruler_info['line_coords']
