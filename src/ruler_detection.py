@@ -52,20 +52,12 @@ class RulerDetector:
         Returns:
             dict: a dictionary containing the ruler information, if not detected return None
         """
-        # 主要方法: 直接通过OCR检测数字
+        # Method: Detection with OCR
         ruler_info = self._detect_ruler_by_digits(image)
         
         if ruler_info is not None:
             return ruler_info
         
-        # # 备用方法: 原有的形态学检测
-        # ruler_info_morphology = self._detect_ruler_by_morphology(image)
-        
-        # if ruler_info_morphology is not None:
-        #     return ruler_info_morphology
-        
-        # return None
-    
     def _detect_ruler_by_digits(self, image: np.ndarray) -> Optional[dict]:
         """
         通过OCR检测刻度数字来检测米尺
@@ -150,75 +142,40 @@ class RulerDetector:
         
         try:
             # 尝试使用 EasyOCR - 使用缓存的模型
-            if 'easyocr' in globals():
-                if self._ocr_reader is None:
-                    # 只在第一次使用时初始化
-                    self._ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-                
-                try:
-                    results = self._ocr_reader.readtext(image, allowlist='0123456789')
-                except Exception as ocr_error:
-                    print(f"EasyOCR failed for this image: {ocr_error}")
-                    return []
-                
-                valid_digits = []
-                for (bbox, text, confidence) in results:
-                    if text.isdigit() and confidence > 0.5:
-                        num = int(text)
-                        # 只保留米尺刻度：10的倍数，0-120cm
-                        if 0 <= num <= 120 and num % 10 == 0:
-                            # 计算边界框中心
-                            x_coords = [point[0] for point in bbox]
-                            y_coords = [point[1] for point in bbox]
-                            x = int(min(x_coords))
-                            y = int(min(y_coords))
-                            w = int(max(x_coords) - min(x_coords))
-                            h = int(max(y_coords) - min(y_coords))
-                            
-                            valid_digits.append({
-                                'value': num,
-                                'x': x,
-                                'y': y,
-                                'width': w,
-                                'height': h,
-                                'center_x': x + w//2,
-                                'center_y': y + h//2,
-                                'confidence': confidence
-                            })
+            if self._ocr_reader is None:
+                # 只在第一次使用时初始化
+                self._ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
             
-            else:
-                # 使用 Tesseract (回退)
-                roi_x_start = max(0, w - 300)
-                roi = image[:, roi_x_start:]
-                gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                binary_inv = cv2.bitwise_not(binary)
-                resized = cv2.resize(binary_inv, (binary_inv.shape[1] * 2, binary_inv.shape[0] * 2))
-                
-                config = r'--psm 6 -c tessedit_char_whitelist=0123456789'
-                data = pytesseract.image_to_data(resized, config=config, output_type=pytesseract.Output.DICT)
-                
-                valid_digits = []
-                for i in range(len(data['text'])):
-                    text = data['text'][i].strip()
-                    if text.isdigit():
-                        num = int(text)
-                        if 0 <= num <= 120 and num % 10 == 0 and data['conf'][i] > 30:
-                            x = data['left'][i] // 2 + roi_x_start
-                            y = data['top'][i] // 2
-                            w = data['width'][i] // 2
-                            h = data['height'][i] // 2
-                            
-                            valid_digits.append({
-                                'value': num,
-                                'x': x,
-                                'y': y,
-                                'width': w,
-                                'height': h,
-                                'center_x': x + w//2,
-                                'center_y': y + h//2,
-                                'confidence': data['conf'][i]
-                            })
+            try:
+                results = self._ocr_reader.readtext(image, allowlist='0123456789')
+            except Exception as ocr_error:
+                print(f"EasyOCR failed for this image: {ocr_error}")
+                return []
+            
+            valid_digits = []
+            for (bbox, text, confidence) in results:
+                if text.isdigit() and confidence > 0.5:
+                    num = int(text)
+                    # 只保留米尺刻度：10的倍数，0-120cm
+                    if 0 <= num <= 120 and num % 10 == 0:
+                        # 计算边界框中心
+                        x_coords = [point[0] for point in bbox]
+                        y_coords = [point[1] for point in bbox]
+                        x = int(min(x_coords))
+                        y = int(min(y_coords))
+                        w = int(max(x_coords) - min(x_coords))
+                        h = int(max(y_coords) - min(y_coords))
+                        
+                        valid_digits.append({
+                            'value': num,
+                            'x': x,
+                            'y': y,
+                            'width': w,
+                            'height': h,
+                            'center_x': x + w//2,
+                            'center_y': y + h//2,
+                            'confidence': confidence
+                        })
             
             # 去除重复
             valid_digits = self._remove_duplicate_digits(valid_digits)
