@@ -175,7 +175,7 @@ class RulerDetector:
                 if text.isdigit() and confidence > 0.5:
                     num = int(text)
                     # 只保留米尺刻度：10的倍数，0-120cm
-                    if 0 <= num <= 120 and num % 10 == 0:
+                    if 0 <= num <= 200 and num % 10 == 0:
                         # 计算边界框中心
                         x_coords = [point[0] for point in bbox]
                         y_coords = [point[1] for point in bbox]
