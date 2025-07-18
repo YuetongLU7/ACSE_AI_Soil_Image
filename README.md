@@ -1,14 +1,28 @@
-# ACSE_AI_Soil_Image - Prétraitement d'Images de Sol
+# ACSE_AI_Soil_Image - Pipeline de Prétraitement d'Images de Sol
 
-Ce projet implémente un pipeline de prétraitement automatisé pour les images de sol, incluant la détection de mètre-ruban, la segmentation des zones de sol et l'évaluation de la qualité.
+## Statut du Projet
 
-## Objectifs
+**Phase Actuelle : Prétraitement d'Images (Terminée)**
 
-- Détecter automatiquement les mètres-rubans dans les images de sol
-- Calculer le ratio pixels/cm pour l'analyse dimensionnelle
-- Segmenter les zones de sol en excluant le ciel, la végétation et les outils
-- Évaluer la qualité des images et filtrer les images de faible qualité
-- Créer des ensembles de données d'entraînement pour les modèles IA
+Ce projet fait partie d'un système d'analyse IA des images de sol. La phase de prétraitement est maintenant opérationnelle et prête pour la phase suivante : l'analyse des horizons de sol par intelligence artificielle.
+
+## Phase 1 : Prétraitement d'Images (Terminée)
+
+Cette phase implémente un pipeline de prétraitement automatisé pour les images de sol, incluant la détection de mètre-ruban, la segmentation des zones de sol et l'évaluation de la qualité.
+
+### Objectifs Accomplis
+
+- **Détection automatique des mètres-rubans** dans les images de sol
+- **Calcul du ratio pixels/cm** pour l'analyse dimensionnelle précise
+- **Segmentation morphologique du sol** excluant le ciel, la végétation et les outils
+- **Évaluation de la qualité** des images avec filtrage automatique
+- **Préparation des données** pour l'entraînement de modèles IA
+
+## Phase 2 : Reconnaissance des Horizons de Sol (En Développement)
+
+- **Analyse IA des horizons** : Identification automatique des couches de sol
+- **Mesure des profondeurs** : Calcul précis des limites d'horizons en cm
+- **Classification des sols** : Reconnaissance des types de sol basée sur les horizons
 
 ## Structure du Projet
 
@@ -118,28 +132,31 @@ quality_assessment:
     min_mask_connectivity: 0.7
 ```
 
-## Fonctionnalités Principales
+## Fonctionnalités de Prétraitement Implémentées
 
 ### 1. Détection de Mètre-Ruban
 - **Méthode principale**: Détection OCR des chiffres d'échelle (0, 10, 20, ..., 120cm)
 - **Méthode de secours**: Détection morphologique
 - **Masquage double**: Zone du mètre + zone des chiffres
-- **Calcul automatique**: Ratio pixels/cm
+- **Calcul automatique**: Ratio pixels/cm pour conversion d'échelle
 
-### 2. Segmentation du Sol
-- **Méthode d'exclusion**: Élimine les zones non-sol
-- **Zones exclues**: Ciel, végétation, mètre-ruban, outils métalliques
-- **Algorithmes**: Détection HSV + opérations morphologiques
+### 2. Segmentation Morphologique du Sol
+- **Méthode d'exclusion**: Élimine automatiquement les zones non-sol
+- **Zones exclues**: Ciel (régions uniformes), végétation (textures linéaires), mètre-ruban
+- **Algorithmes avancés**: 
+  - Détection du ciel par variance locale
+  - Végétation par filtres Gabor et textures linéaires
+  - Optimisation morphologique des régions de sol
 
-### 3. Évaluation de la Qualité
-- **Métriques**: Couverture sol, reflets, contraste, ombres, connectivité
-- **Filtrage automatique**: Sépare les images haute/basse qualité
-- **Rapports détaillés**: Statistiques et problèmes identifiés
+### 3. Évaluation de la Qualité d'Image
+- **Métriques automatisées**: Couverture sol, reflets, contraste, ombres, connectivité
+- **Filtrage intelligent**: Sépare automatiquement les images haute/basse qualité
+- **Rapports détaillés**: Statistiques complètes et problèmes identifiés
 
-### 4. Ensemble de Données d'Entraînement
+### 4. Préparation de Données IA
 - **Division automatique**: 80% entraînement / 20% validation
-- **Structure organisée**: Images et masques séparés
-- **Compatible IA**: Format prêt pour U-Net, DeepLab, etc.
+- **Structure organisée**: Images et masques de segmentation séparés
+- **Compatibilité IA**: Format standardisé prêt pour les modèles de deep learning
 
 ## Fichiers de Sortie
 
@@ -196,7 +213,15 @@ Projet de stage de recherche - Utilisation académique.
 
 ## Contexte Académique
 
-Développé dans le cadre d'un stage de recherche sur l'analyse automatisée des images de sol pour l'agriculture de précision et la science du sol.
+Ce projet constitue la **première phase** d'un système complet d'analyse IA des images de sol. Développé dans le cadre d'un stage de recherche sur l'analyse automatisée des sols pour l'agriculture de précision.
+
+### Progression du Projet
+
+- **Phase 1 (Terminée)** : Pipeline de prétraitement robuste avec segmentation morphologique avancée
+- **Phase 2 (En cours)** : Développement du modèle DeepLabV3+ pour la reconnaissance des horizons de sol
+- **Phase 3 (Planifiée)** : Intégration complète et déploiement du système d'analyse
+
+Les données Excel de description des horizons sont déjà disponibles pour l'entraînement de la prochaine phase IA.
 
 ---
 
