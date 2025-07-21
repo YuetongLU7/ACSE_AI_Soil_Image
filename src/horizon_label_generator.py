@@ -232,6 +232,39 @@ class HorizonLabelGenerator:
             print(f"  ✗ {profile_name}: Erreur - {e}")
             return False
     
+    def find_processed_files(self, excel_profile_name: str) -> Optional[str]:
+        """
+        Find the actual processed file name that matches the Excel profile name
+        
+        Args:
+            excel_profile_name: Profile name from Excel (e.g., "F54001")
+            
+        Returns:
+            Actual file name in processed directory (e.g., "F54001r") or None
+        """
+        # Check exact match first
+        exact_match = self.processed_data_dir / f"{excel_profile_name}_metadata.json"
+        if exact_match.exists():
+            return excel_profile_name
+        
+        # Look for variations (adding suffixes like 'r', 'a', 'b', etc.)
+        for suffix in ['r', 'a', 'b', '1', '2']:
+            variant_name = f"{excel_profile_name}{suffix}"
+            variant_file = self.processed_data_dir / f"{variant_name}_metadata.json"
+            if variant_file.exists():
+                return variant_name
+        
+        # Try pattern matching for more complex variations
+        pattern = f"{excel_profile_name}*_metadata.json"
+        matching_files = list(self.processed_data_dir.glob(pattern))
+        if matching_files:
+            # Extract the profile name from the first match
+            file_name = matching_files[0].name
+            profile_name = file_name.replace("_metadata.json", "")
+            return profile_name
+        
+        return None
+    
     def generate_all_labels(self) -> Dict[str, int]:
         """
         Generate horizon labels for all profiles in Excel data
@@ -244,24 +277,50 @@ class HorizonLabelGenerator:
         
         if not self.horizon_data:
             print("Aucune donnée d'horizon à traiter")
-            return {'total': 0, 'success': 0, 'failed': 0}
+            return {'total': 0, 'success': 0, 'failed': 0, 'not_found': 0}
         
         print(f"\\n=== Génération des étiquettes d'horizons ===")
         print(f"Traitement de {len(self.horizon_data)} profils...")
         
-        stats = {'total': len(self.horizon_data), 'success': 0, 'failed': 0}
+        stats = {'total': len(self.horizon_data), 'success': 0, 'failed': 0, 'not_found': 0}
         
-        for profile_name in self.horizon_data.keys():
-            if self.process_single_profile(profile_name):
-                stats['success'] += 1
-            else:
+        for excel_profile_name in self.horizon_data.keys():
+            # Find corresponding processed file
+            processed_profile_name = self.find_processed_files(excel_profile_name)
+            
+            if processed_profile_name is None:
+                print(f"  ⚠️  {excel_profile_name}: aucun fichier traité correspondant trouvé")
+                stats['not_found'] += 1
+                continue
+            
+            # Temporarily update horizon_data with the processed name
+            horizon_depths = self.horizon_data[excel_profile_name]
+            temp_horizon_data = self.horizon_data.copy()
+            temp_horizon_data[processed_profile_name] = horizon_depths
+            self.horizon_data = temp_horizon_data
+            
+            try:
+                if self.process_single_profile(processed_profile_name):
+                    print(f"  ✓ {excel_profile_name} -> {processed_profile_name}: étiquettes générées")
+                    stats['success'] += 1
+                else:
+                    stats['failed'] += 1
+            except Exception as e:
+                print(f"  ✗ {excel_profile_name} -> {processed_profile_name}: Erreur - {e}")
                 stats['failed'] += 1
+            
+            # Restore original horizon_data
+            del temp_horizon_data[processed_profile_name]
+            self.horizon_data = temp_horizon_data
         
         print(f"\\n=== Résumé ===")
-        print(f"Total: {stats['total']}")
+        print(f"Total profils Excel: {stats['total']}")
+        print(f"Fichiers traités trouvés: {stats['total'] - stats['not_found']}")
         print(f"Succès: {stats['success']}")
         print(f"Échecs: {stats['failed']}")
-        print(f"Taux de réussite: {stats['success']/stats['total']*100:.1f}%")
+        print(f"Introuvables: {stats['not_found']}")
+        if stats['total'] > 0:
+            print(f"Taux de réussite: {stats['success']/stats['total']*100:.1f}%")
         
         return stats
 
@@ -270,8 +329,8 @@ def main():
     """Test the horizon label generation"""
     
     # Configuration paths
-    excel_path = "/mnt/e/CodeForStudy/Stage/Projet/ACSE_AI_Soil_Image/data/description/hrz_description_photo.xlsx"
-    processed_dir = "/mnt/e/CodeForStudy/Stage/Projet/ACSE_AI_Soil_Image/data/processed"
+    excel_path = "data/description/hrz_description_photo.xlsx"
+    processed_dir = "data/processed"
     
     print("=== Test de génération d'étiquettes d'horizons ===")
     
