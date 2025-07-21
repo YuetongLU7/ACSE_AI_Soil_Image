@@ -134,6 +134,11 @@ class SoilHorizonDataset(Dataset):
                 transformed = self.transform(image=image, mask=mask)
                 image = transformed['image']
                 mask = transformed['mask']
+                # Ensure mask is long type
+                if isinstance(mask, torch.Tensor):
+                    mask = mask.long()
+                else:
+                    mask = torch.from_numpy(mask).long()
             except TypeError:
                 # Fall back to torchvision transforms
                 from PIL import Image as PILImage
@@ -145,6 +150,10 @@ class SoilHorizonDataset(Dataset):
             # Default transform to tensor
             image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
             mask = torch.from_numpy(mask).long()
+        
+        # Ensure mask is correct type and clamp values
+        mask = mask.long()
+        mask = torch.clamp(mask, 0, self.max_horizons)
         
         return {
             'image': image,
@@ -323,7 +332,7 @@ def create_data_loaders(data_dir: str, batch_size: int = 8, val_split: float = 0
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=False,  # Disable for CPU
         drop_last=True
     )
     
@@ -332,7 +341,7 @@ def create_data_loaders(data_dir: str, batch_size: int = 8, val_split: float = 0
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=False  # Disable for CPU
     )
     
     return train_loader, val_loader, full_dataset

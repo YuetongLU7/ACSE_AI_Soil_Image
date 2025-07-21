@@ -22,7 +22,7 @@ def main():
         "--image-size", "512", "512",
         "--val-split", "0.2",
         "--save-dir", "checkpoints",
-        "--num-workers", "2",  # Reduced for Windows
+        "--num-workers", "0",  # Disable multiprocessing for Windows
         "--device", "cuda" if sys.platform != "win32" else "cpu"
     ]
     
