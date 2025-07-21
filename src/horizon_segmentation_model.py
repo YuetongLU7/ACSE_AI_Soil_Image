@@ -129,10 +129,18 @@ class SoilHorizonDataset(Dataset):
         
         # Apply transforms
         if self.transform:
-            # Transform image and mask together (keep synchronized)
-            transformed = self.transform(image=image, mask=mask)
-            image = transformed['image']
-            mask = transformed['mask']
+            try:
+                # Try albumentations format first
+                transformed = self.transform(image=image, mask=mask)
+                image = transformed['image']
+                mask = transformed['mask']
+            except TypeError:
+                # Fall back to torchvision transforms
+                from PIL import Image as PILImage
+                image_pil = PILImage.fromarray(image)
+                image = self.transform(image_pil)
+                # For torchvision, we need to handle mask separately
+                mask = torch.from_numpy(cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)).long()
         else:
             # Default transform to tensor
             image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
@@ -262,7 +270,7 @@ def calculate_class_weights(dataset: SoilHorizonDataset, num_classes: int) -> to
     class_counts = torch.zeros(num_classes)
     
     print("Calcul des poids de classes...")
-    for i in range(len(dataset)):
+    for i in range(min(len(dataset), 50)):  # Sample subset to speed up
         sample = dataset[i]
         mask = sample['mask']
         
@@ -270,11 +278,12 @@ def calculate_class_weights(dataset: SoilHorizonDataset, num_classes: int) -> to
         unique, counts = torch.unique(mask, return_counts=True)
         for class_id, count in zip(unique, counts):
             if class_id < num_classes:
-                class_counts[class_id] += count
+                class_counts[class_id] += count.item()
     
-    # Calculate weights (inverse proportion)
+    # Remove zeros and calculate weights (inverse proportion)
+    class_counts = torch.clamp(class_counts, min=1.0)  # Avoid division by zero
     total_pixels = class_counts.sum()
-    class_weights = total_pixels / (num_classes * class_counts + 1e-8)
+    class_weights = total_pixels / (num_classes * class_counts)
     
     print(f"Distribution des classes: {class_counts}")
     print(f"Poids des classes: {class_weights}")

@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""
+Quick training launcher for soil horizon segmentation model
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+def main():
+    """Launch training with optimized parameters"""
+    
+    # Training parameters
+    params = [
+        sys.executable, "src/train_horizon_segmentation.py",
+        "--data-dir", "data/processed",
+        "--batch-size", "4",  # Reduced for memory constraints
+        "--epochs", "50",
+        "--lr", "0.0001",     # Lower learning rate for fine-tuning
+        "--num-classes", "8",
+        "--backbone", "resnet50",
+        "--image-size", "512", "512",
+        "--val-split", "0.2",
+        "--save-dir", "checkpoints",
+        "--num-workers", "2",  # Reduced for Windows
+        "--device", "cuda" if sys.platform != "win32" else "cpu"
+    ]
+    
+    print("=== Lancement de l'entraînement du modèle de segmentation des horizons ===")
+    print(f"Commande: {' '.join(params)}")
+    
+    # Create checkpoints directory
+    Path("checkpoints").mkdir(exist_ok=True)
+    
+    # Run training
+    try:
+        subprocess.run(params, check=True)
+        print("\n=== Entraînement terminé avec succès ===")
+    except subprocess.CalledProcessError as e:
+        print(f"\n=== Erreur lors de l'entraînement: {e} ===")
+    except KeyboardInterrupt:
+        print("\n=== Entraînement interrompu par l'utilisateur ===")
+
+if __name__ == "__main__":
+    main()
