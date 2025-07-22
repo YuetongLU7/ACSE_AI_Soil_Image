@@ -45,7 +45,7 @@ class HorizonSegmentationModel(nn.Module):
         # Replace classifier head
         self.model.classifier = DeepLabHead(2048, num_classes)
         
-        # Auxiliary classifier (if exists)
+        # Keep auxiliary classifier for compatibility with trained model
         if hasattr(self.model, 'aux_classifier'):
             self.model.aux_classifier = DeepLabHead(1024, num_classes)
     
