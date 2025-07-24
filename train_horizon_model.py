@@ -10,20 +10,18 @@ from pathlib import Path
 def main():
     """Launch training with optimized parameters"""
     
-    # Training parameters
+    # Training parameters for U-Net regression
     params = [
         sys.executable, "src/train_horizon_segmentation.py",
         "--data-dir", "data/processed",
         "--batch-size", "4",  # Reduced for memory constraints
         "--epochs", "50",
-        "--lr", "0.0001",     # Lower learning rate for fine-tuning
-        "--num-classes", "8",
-        "--backbone", "resnet50",
-        "--image-size", "512", "512",
+        "--lr", "0.001",      # Standard learning rate for U-Net
+        "--max-horizons", "7",
         "--val-split", "0.2",
         "--save-dir", "checkpoints",
         "--num-workers", "0",  # Disable multiprocessing for Windows
-        "--device", "cuda"  # Force GPU usage
+        "--device", "cuda"    # Force GPU usage
     ]
     
     print("=== Lancement de l'entraînement du modèle de segmentation des horizons ===")

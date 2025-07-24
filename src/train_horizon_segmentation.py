@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Training script for soil horizon segmentation using DeepLabV3
+Training script for soil horizon depth regression using U-Net
 """
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -17,80 +16,20 @@ import time
 from tqdm import tqdm
 
 from horizon_segmentation_model import (
-    HorizonSegmentationModel,
-    SoilHorizonDataset, 
-    SegmentationLoss,
+    LightweightUNet,
+    SoilHorizonDepthDataset, 
+    DepthRegressionLoss,
     create_data_loaders,
-    calculate_class_weights
+    calculate_metrics
 )
 
 
-class MetricsCalculator:
-    """Calculate segmentation metrics"""
+class DepthRegressionTrainer:
+    """Trainer for horizon depth regression model"""
     
-    def __init__(self, num_classes: int, ignore_index: int = 255):
-        self.num_classes = num_classes
-        self.ignore_index = ignore_index
-        self.reset()
-    
-    def reset(self):
-        """Reset accumulated metrics"""
-        self.confusion_matrix = torch.zeros(self.num_classes, self.num_classes)
-    
-    def update(self, predictions: torch.Tensor, targets: torch.Tensor):
-        """Update metrics with batch results"""
-        # Convert predictions to class indices
-        if predictions.dim() == 4:  # (B, C, H, W)
-            predictions = torch.argmax(predictions, dim=1)
-        
-        # Flatten tensors
-        predictions = predictions.flatten()
-        targets = targets.flatten()
-        
-        # Remove ignored pixels
-        valid_mask = targets != self.ignore_index
-        predictions = predictions[valid_mask]
-        targets = targets[valid_mask]
-        
-        # Update confusion matrix
-        indices = targets * self.num_classes + predictions
-        self.confusion_matrix += torch.bincount(
-            indices, minlength=self.num_classes**2
-        ).view(self.num_classes, self.num_classes)
-    
-    def compute_metrics(self):
-        """Compute final metrics"""
-        cm = self.confusion_matrix
-        
-        # Pixel accuracy
-        pixel_acc = torch.diag(cm).sum() / cm.sum()
-        
-        # Mean accuracy per class
-        class_acc = torch.diag(cm) / (cm.sum(dim=1) + 1e-8)
-        mean_acc = class_acc.mean()
-        
-        # IoU per class
-        intersection = torch.diag(cm)
-        union = cm.sum(dim=0) + cm.sum(dim=1) - intersection
-        iou = intersection / (union + 1e-8)
-        mean_iou = iou.mean()
-        
-        return {
-            'pixel_accuracy': pixel_acc.item(),
-            'mean_accuracy': mean_acc.item(),
-            'mean_iou': mean_iou.item(),
-            'class_iou': iou.tolist(),
-            'class_accuracy': class_acc.tolist()
-        }
-
-
-class HorizonTrainer:
-    """Trainer for horizon segmentation model"""
-    
-    def __init__(self, model: nn.Module, train_loader: DataLoader, 
-                 val_loader: DataLoader, criterion: nn.Module, 
-                 optimizer: optim.Optimizer, scheduler=None, 
-                 device: str = 'cuda', save_dir: str = 'checkpoints'):
+    def __init__(self, model: nn.Module, train_loader, val_loader, 
+                 criterion: nn.Module, optimizer: optim.Optimizer, 
+                 scheduler=None, device: str = 'cuda', save_dir: str = 'checkpoints'):
         
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -106,97 +45,112 @@ class HorizonTrainer:
         self.history = {
             'train_loss': [],
             'val_loss': [],
-            'train_metrics': [],
-            'val_metrics': []
+            'train_mae': [],
+            'val_mae': [],
+            'train_rmse': [],
+            'val_rmse': []
         }
         
         # Best model tracking
         self.best_val_loss = float('inf')
-        self.best_val_iou = 0.0
+        self.best_val_mae = float('inf')
         
     def train_epoch(self, epoch: int):
         """Train for one epoch"""
         self.model.train()
         running_loss = 0.0
-        metrics_calc = MetricsCalculator(num_classes=self.model.num_classes)
+        total_mae = 0.0
+        total_rmse = 0.0
+        num_batches = 0
         
         pbar = tqdm(self.train_loader, desc=f'Époque {epoch+1} - Entraînement')
         
         for batch_idx, batch in enumerate(pbar):
             images = batch['image'].to(self.device)
-            targets = batch['mask'].to(self.device)
+            targets = batch['depths'].to(self.device)
+            valid_mask = batch['valid_mask'].to(self.device)
             
             # Forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(images)
+            predictions = self.model(images)
             
             # Calculate loss
-            loss = self.criterion(outputs, targets)
+            loss = self.criterion(predictions, targets, valid_mask)
             
             # Backward pass
             loss.backward()
             self.optimizer.step()
             
-            # Update metrics
-            running_loss += loss.item()
-            
-            if isinstance(outputs, dict):
-                predictions = outputs['out']
-            else:
-                predictions = outputs
+            # Calculate metrics
+            with torch.no_grad():
+                metrics = calculate_metrics(predictions, targets, valid_mask)
                 
-            metrics_calc.update(predictions.detach().cpu(), targets.detach().cpu())
+            running_loss += loss.item()
+            total_mae += metrics['mae']
+            total_rmse += metrics['rmse']
+            num_batches += 1
             
             # Update progress bar
-            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'mae': f'{metrics["mae"]:.2f}cm'
+            })
         
         # Calculate epoch metrics
-        avg_loss = running_loss / len(self.train_loader)
-        metrics = metrics_calc.compute_metrics()
+        avg_loss = running_loss / num_batches
+        avg_mae = total_mae / num_batches
+        avg_rmse = total_rmse / num_batches
         
         self.history['train_loss'].append(avg_loss)
-        self.history['train_metrics'].append(metrics)
+        self.history['train_mae'].append(avg_mae)
+        self.history['train_rmse'].append(avg_rmse)
         
-        return avg_loss, metrics
+        return avg_loss, avg_mae, avg_rmse
     
     def validate_epoch(self, epoch: int):
         """Validate for one epoch"""
         self.model.eval()
         running_loss = 0.0
-        metrics_calc = MetricsCalculator(num_classes=self.model.num_classes)
+        total_mae = 0.0
+        total_rmse = 0.0
+        num_batches = 0
         
         pbar = tqdm(self.val_loader, desc=f'Époque {epoch+1} - Validation')
         
         with torch.no_grad():
             for batch in pbar:
                 images = batch['image'].to(self.device)
-                targets = batch['mask'].to(self.device)
+                targets = batch['depths'].to(self.device)
+                valid_mask = batch['valid_mask'].to(self.device)
                 
                 # Forward pass
-                outputs = self.model(images)
-                loss = self.criterion(outputs, targets)
+                predictions = self.model(images)
+                loss = self.criterion(predictions, targets, valid_mask)
                 
-                # Update metrics
+                # Calculate metrics
+                metrics = calculate_metrics(predictions, targets, valid_mask)
+                
                 running_loss += loss.item()
-                
-                if isinstance(outputs, dict):
-                    predictions = outputs['out']
-                else:
-                    predictions = outputs
-                    
-                metrics_calc.update(predictions.cpu(), targets.cpu())
+                total_mae += metrics['mae']
+                total_rmse += metrics['rmse']
+                num_batches += 1
                 
                 # Update progress bar
-                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'mae': f'{metrics["mae"]:.2f}cm'
+                })
         
         # Calculate epoch metrics
-        avg_loss = running_loss / len(self.val_loader)
-        metrics = metrics_calc.compute_metrics()
+        avg_loss = running_loss / num_batches
+        avg_mae = total_mae / num_batches
+        avg_rmse = total_rmse / num_batches
         
         self.history['val_loss'].append(avg_loss)
-        self.history['val_metrics'].append(metrics)
+        self.history['val_mae'].append(avg_mae)
+        self.history['val_rmse'].append(avg_rmse)
         
-        return avg_loss, metrics
+        return avg_loss, avg_mae, avg_rmse
     
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         """Save model checkpoint"""
@@ -207,7 +161,7 @@ class HorizonTrainer:
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'history': self.history,
             'best_val_loss': self.best_val_loss,
-            'best_val_iou': self.best_val_iou
+            'best_val_mae': self.best_val_mae
         }
         
         # Save regular checkpoint
@@ -233,10 +187,10 @@ class HorizonTrainer:
             print(f"\n=== Époque {epoch+1}/{num_epochs} ===")
             
             # Training phase
-            train_loss, train_metrics = self.train_epoch(epoch)
+            train_loss, train_mae, train_rmse = self.train_epoch(epoch)
             
             # Validation phase
-            val_loss, val_metrics = self.validate_epoch(epoch)
+            val_loss, val_mae, val_rmse = self.validate_epoch(epoch)
             
             # Update learning rate
             if self.scheduler:
@@ -246,20 +200,25 @@ class HorizonTrainer:
                     self.scheduler.step()
             
             # Print epoch results
-            print(f"Train Loss: {train_loss:.4f}, Train IoU: {train_metrics['mean_iou']:.4f}")
-            print(f"Val Loss: {val_loss:.4f}, Val IoU: {val_metrics['mean_iou']:.4f}")
+            print(f"Train Loss: {train_loss:.4f}, Train MAE: {train_mae:.2f}cm, Train RMSE: {train_rmse:.2f}cm")
+            print(f"Val Loss: {val_loss:.4f}, Val MAE: {val_mae:.2f}cm, Val RMSE: {val_rmse:.2f}cm")
             
             # Check if best model
             is_best_loss = val_loss < self.best_val_loss
-            is_best_iou = val_metrics['mean_iou'] > self.best_val_iou
+            is_best_mae = val_mae < self.best_val_mae
             
             if is_best_loss:
                 self.best_val_loss = val_loss
-            if is_best_iou:
-                self.best_val_iou = val_metrics['mean_iou']
+            if is_best_mae:
+                self.best_val_mae = val_mae
             
-            # Save checkpoint
-            self.save_checkpoint(epoch, is_best=is_best_iou)
+            # Save checkpoint (use MAE as primary metric)
+            self.save_checkpoint(epoch, is_best=is_best_mae)
+            
+            # Early stopping check
+            if val_mae < 5.0:  # If MAE < 5cm, very good performance
+                print(f"Excellente performance atteinte (MAE < 5cm), arrêt anticipé!")
+                break
             
             # Save training curves every 5 epochs
             if (epoch + 1) % 5 == 0:
@@ -268,7 +227,7 @@ class HorizonTrainer:
         total_time = time.time() - start_time
         print(f"\nEntraînement terminé en {total_time/3600:.2f} heures")
         print(f"Meilleure perte de validation: {self.best_val_loss:.4f}")
-        print(f"Meilleur IoU de validation: {self.best_val_iou:.4f}")
+        print(f"Meilleure MAE de validation: {self.best_val_mae:.2f}cm")
         
         # Final plots and save
         self.plot_training_curves()
@@ -289,38 +248,40 @@ class HorizonTrainer:
         axes[0, 0].legend()
         axes[0, 0].grid(True)
         
-        # IoU curves
-        train_iou = [m['mean_iou'] for m in self.history['train_metrics']]
-        val_iou = [m['mean_iou'] for m in self.history['val_metrics']]
-        axes[0, 1].plot(epochs, train_iou, 'b-', label='Train')
-        axes[0, 1].plot(epochs, val_iou, 'r-', label='Validation')
-        axes[0, 1].set_title('IoU Moyen')
+        # MAE curves
+        axes[0, 1].plot(epochs, self.history['train_mae'], 'b-', label='Train')
+        axes[0, 1].plot(epochs, self.history['val_mae'], 'r-', label='Validation')
+        axes[0, 1].set_title('Erreur Absolue Moyenne (MAE)')
         axes[0, 1].set_xlabel('Époque')
-        axes[0, 1].set_ylabel('IoU')
+        axes[0, 1].set_ylabel('MAE (cm)')
         axes[0, 1].legend()
         axes[0, 1].grid(True)
         
-        # Pixel accuracy
-        train_acc = [m['pixel_accuracy'] for m in self.history['train_metrics']]
-        val_acc = [m['pixel_accuracy'] for m in self.history['val_metrics']]
-        axes[1, 0].plot(epochs, train_acc, 'b-', label='Train')
-        axes[1, 0].plot(epochs, val_acc, 'r-', label='Validation')
-        axes[1, 0].set_title('Précision des Pixels')
+        # RMSE curves
+        axes[1, 0].plot(epochs, self.history['train_rmse'], 'b-', label='Train')
+        axes[1, 0].plot(epochs, self.history['val_rmse'], 'r-', label='Validation')
+        axes[1, 0].set_title('Erreur Quadratique Moyenne (RMSE)')
         axes[1, 0].set_xlabel('Époque')
-        axes[1, 0].set_ylabel('Précision')
+        axes[1, 0].set_ylabel('RMSE (cm)')
         axes[1, 0].legend()
         axes[1, 0].grid(True)
         
-        # Mean class accuracy
-        train_mean_acc = [m['mean_accuracy'] for m in self.history['train_metrics']]
-        val_mean_acc = [m['mean_accuracy'] for m in self.history['val_metrics']]
-        axes[1, 1].plot(epochs, train_mean_acc, 'b-', label='Train')
-        axes[1, 1].plot(epochs, val_mean_acc, 'r-', label='Validation')
-        axes[1, 1].set_title('Précision Moyenne par Classe')
-        axes[1, 1].set_xlabel('Époque')
-        axes[1, 1].set_ylabel('Précision')
-        axes[1, 1].legend()
-        axes[1, 1].grid(True)
+        # Learning rate (if scheduler exists)
+        if self.scheduler and hasattr(self.scheduler, 'get_last_lr'):
+            try:
+                lr_history = [self.scheduler.get_last_lr()[0]] * len(epochs)
+                axes[1, 1].plot(epochs, lr_history, 'g-')
+                axes[1, 1].set_title('Taux d\'Apprentissage')
+                axes[1, 1].set_xlabel('Époque')
+                axes[1, 1].set_ylabel('Learning Rate')
+                axes[1, 1].set_yscale('log')
+                axes[1, 1].grid(True)
+            except:
+                axes[1, 1].text(0.5, 0.5, 'Learning Rate\nNon Disponible', 
+                               ha='center', va='center', transform=axes[1, 1].transAxes)
+        else:
+            axes[1, 1].text(0.5, 0.5, 'Learning Rate\nNon Disponible', 
+                           ha='center', va='center', transform=axes[1, 1].transAxes)
         
         plt.tight_layout()
         plt.savefig(self.save_dir / 'training_curves.png', dpi=300, bbox_inches='tight')
@@ -334,17 +295,15 @@ class HorizonTrainer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train soil horizon segmentation model')
+    parser = argparse.ArgumentParser(description='Train soil horizon depth regression model')
     parser.add_argument('--data-dir', default='data/processed', help='Path to processed data directory')
     parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--num-classes', type=int, default=8, help='Number of classes')
-    parser.add_argument('--backbone', default='resnet50', choices=['resnet50', 'resnet101'], help='Backbone network')
-    parser.add_argument('--image-size', type=int, nargs=2, default=[512, 512], help='Input image size [height width]')
+    parser.add_argument('--max-horizons', type=int, default=7, help='Maximum number of horizons')
     parser.add_argument('--val-split', type=float, default=0.2, help='Validation split ratio')
     parser.add_argument('--save-dir', default='checkpoints', help='Directory to save checkpoints')
-    parser.add_argument('--num-workers', type=int, default=4, help='Number of data loader workers')
+    parser.add_argument('--num-workers', type=int, default=0, help='Number of data loader workers')
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'], help='Device to use')
     parser.add_argument('--resume', help='Path to checkpoint to resume training')
     
@@ -354,6 +313,10 @@ def main():
     device = args.device if torch.cuda.is_available() else 'cpu'
     print(f"Utilisation du device: {device}")
     
+    if device == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"Mémoire GPU: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    
     # Create data loaders
     print("Création des chargeurs de données...")
     try:
@@ -361,7 +324,6 @@ def main():
             data_dir=args.data_dir,
             batch_size=args.batch_size,
             val_split=args.val_split,
-            image_size=tuple(args.image_size),
             num_workers=args.num_workers
         )
         print(f"Données chargées: {len(train_loader.dataset)} entraînement, {len(val_loader.dataset)} validation")
@@ -370,31 +332,23 @@ def main():
         return
     
     # Create model
-    print(f"Création du modèle {args.backbone} avec {args.num_classes} classes...")
-    model = HorizonSegmentationModel(
-        num_classes=args.num_classes,
-        backbone=args.backbone,
-        pretrained=True
-    )
+    print(f"Création du modèle U-Net avec {args.max_horizons} horizons maximum...")
+    model = LightweightUNet(max_horizons=args.max_horizons)
+    print(f"Paramètres du modèle: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Calculate class weights
-    print("Calcul des poids de classes...")
-    class_weights = calculate_class_weights(full_dataset, args.num_classes)
-    class_weights = class_weights.to(device)
-    
-    # Create loss function
-    criterion = SegmentationLoss(weight=class_weights)
+    # Create loss function (no class weights needed for regression)
+    criterion = DepthRegressionLoss()
     
     # Create optimizer
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     
     # Create scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5
+        optimizer, mode='min', factor=0.5, patience=10
     )
     
     # Create trainer
-    trainer = HorizonTrainer(
+    trainer = DepthRegressionTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -417,7 +371,7 @@ def main():
         start_epoch = checkpoint['epoch']
         trainer.history = checkpoint.get('history', trainer.history)
         trainer.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-        trainer.best_val_iou = checkpoint.get('best_val_iou', 0.0)
+        trainer.best_val_mae = checkpoint.get('best_val_mae', float('inf'))
     
     # Start training
     trainer.train(args.epochs - start_epoch)
