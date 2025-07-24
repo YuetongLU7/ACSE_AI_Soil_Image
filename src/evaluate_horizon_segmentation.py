@@ -322,7 +322,7 @@ def main():
     model = HorizonSegmentationModel(
         num_classes=args.num_classes,
         backbone=args.backbone,
-        pretrained=False  # Don't need pretrained weights when loading checkpoint
+        pretrained=True  # Need pretrained architecture for correct feature extraction
     )
     
     checkpoint = torch.load(args.model_path, map_location=device)

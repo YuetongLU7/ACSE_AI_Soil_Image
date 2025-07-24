@@ -27,7 +27,7 @@ def main():
         "--image-size", "512", "512",
         "--save-dir", "evaluation_results",
         "--val-split", "0.2",
-        "--device", "cuda" if sys.platform != "win32" else "cpu"
+        "--device", "cuda"  # Force GPU usage
     ]
     
     print("=== Lancement de l'évaluation du modèle de segmentation des horizons ===")

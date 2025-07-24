@@ -1,115 +1,158 @@
 #!/usr/bin/env python3
 """
-DeepLabV3 model for soil horizon segmentation
+U-Net model for soil horizon depth regression
+Predicts depth values in centimeters for each horizon boundary
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models.segmentation import deeplabv3_resnet50, deeplabv3_resnet101
-from torchvision.models.segmentation.deeplabv3 import DeepLabHead
-import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
 import cv2
 import numpy as np
 from pathlib import Path
 import json
 from typing import Dict, List, Tuple, Optional
-import random
+import torchvision.transforms as transforms
 from PIL import Image
 
 
-class HorizonSegmentationModel(nn.Module):
-    """DeepLabV3 model for soil horizon segmentation"""
+class LightweightUNet(nn.Module):
+    """Lightweight U-Net for horizon depth regression"""
     
-    def __init__(self, num_classes: int = 8, backbone: str = 'resnet50', pretrained: bool = True):
+    def __init__(self, max_horizons: int = 7):
         """
-        Initialize the segmentation model
+        Initialize U-Net model
         
         Args:
-            num_classes: Number of classes (background + up to 7 horizons)
-            backbone: Backbone network ('resnet50' or 'resnet101')
-            pretrained: Whether to use pretrained weights
+            max_horizons: Maximum number of horizon boundaries to predict
         """
         super().__init__()
-        self.num_classes = num_classes
+        self.max_horizons = max_horizons
         
-        # Select backbone network
-        if backbone == 'resnet50':
-            self.model = deeplabv3_resnet50(pretrained=pretrained)
-        elif backbone == 'resnet101':
-            self.model = deeplabv3_resnet101(pretrained=pretrained)
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
+        # Encoder (downsampling path)
+        self.enc1 = self.conv_block(3, 32)
+        self.enc2 = self.conv_block(32, 64)
+        self.enc3 = self.conv_block(64, 128)
+        self.enc4 = self.conv_block(128, 256)
         
-        # Replace classifier head
-        self.model.classifier = DeepLabHead(2048, num_classes)
+        # Bottleneck
+        self.bottleneck = self.conv_block(256, 512)
         
-        # Keep auxiliary classifier for compatibility with trained model
-        if hasattr(self.model, 'aux_classifier'):
-            self.model.aux_classifier = DeepLabHead(1024, num_classes)
+        # Decoder (upsampling path)
+        self.dec4 = self.conv_block(512 + 256, 256)
+        self.dec3 = self.conv_block(256 + 128, 128)
+        self.dec2 = self.conv_block(128 + 64, 64)
+        self.dec1 = self.conv_block(64 + 32, 32)
+        
+        # Global feature extraction for depth regression
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.depth_regressor = nn.Sequential(
+            nn.Linear(32, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(64, max_horizons),
+            nn.ReLU(inplace=True)  # Ensure positive depth values
+        )
+        
+        # Pooling layers
+        self.pool = nn.MaxPool2d(2, 2)
+        
+    def conv_block(self, in_channels: int, out_channels: int):
+        """Create a convolutional block"""
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, 3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
     
     def forward(self, x):
         """Forward pass"""
-        return self.model(x)
-    
-    def predict(self, x):
-        """Prediction in inference mode"""
-        self.eval()
-        with torch.no_grad():
-            output = self.forward(x)
-            if isinstance(output, dict):
-                output = output['out']
-            return F.softmax(output, dim=1)
+        # Encoder
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
+        e4 = self.enc4(self.pool(e3))
+        
+        # Bottleneck
+        b = self.bottleneck(self.pool(e4))
+        
+        # Decoder with skip connections
+        d4 = F.interpolate(b, e4.shape[2:], mode='bilinear', align_corners=False)
+        d4 = self.dec4(torch.cat([d4, e4], dim=1))
+        
+        d3 = F.interpolate(d4, e3.shape[2:], mode='bilinear', align_corners=False)
+        d3 = self.dec3(torch.cat([d3, e3], dim=1))
+        
+        d2 = F.interpolate(d3, e2.shape[2:], mode='bilinear', align_corners=False)
+        d2 = self.dec2(torch.cat([d2, e2], dim=1))
+        
+        d1 = F.interpolate(d2, e1.shape[2:], mode='bilinear', align_corners=False)
+        d1 = self.dec1(torch.cat([d1, e1], dim=1))
+        
+        # Global pooling and depth regression
+        global_features = self.global_pool(d1).flatten(1)
+        depths = self.depth_regressor(global_features)
+        
+        return depths
 
 
-class SoilHorizonDataset(Dataset):
-    """Soil horizon segmentation dataset"""
+class SoilHorizonDepthDataset(Dataset):
+    """Dataset for soil horizon depth prediction"""
     
     def __init__(self, data_dir: str, transform=None, max_horizons: int = 7):
         """
         Initialize dataset
         
         Args:
-            data_dir: Directory containing processed data
-            transform: Data transformations
-            max_horizons: Maximum number of horizons
+            data_dir: Directory containing processed images and metadata
+            transform: Image transformations
+            max_horizons: Maximum number of horizons to predict
         """
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.max_horizons = max_horizons
         self.samples = []
         
-        # Scan data files
         self._scan_data()
         
     def _scan_data(self):
         """Scan data directory for valid samples"""
         for metadata_file in self.data_dir.glob("*_metadata.json"):
-            # Extract sample name
             sample_name = metadata_file.name.replace("_metadata.json", "")
-            
-            # Check if required files exist
             processed_image = self.data_dir / f"{sample_name}_processed.png"
-            horizon_mask = self.data_dir / f"{sample_name}_horizon_mask.png"
             
-            if processed_image.exists() and horizon_mask.exists():
-                # Read metadata to check if horizon labels exist
+            if processed_image.exists():
                 try:
                     with open(metadata_file, 'r', encoding='utf-8') as f:
                         metadata = json.load(f)
                     
-                    if metadata.get('horizon_info', {}).get('has_horizon_labels', False):
-                        self.samples.append({
-                            'sample_name': sample_name,
-                            'image_path': processed_image,
-                            'mask_path': horizon_mask,
-                            'metadata': metadata
-                        })
+                    horizon_info = metadata.get('horizon_info', {})
+                    if horizon_info.get('has_horizon_labels', False):
+                        # Extract depth values from horizon_depths_cm
+                        horizon_depths = horizon_info['horizon_depths_cm']
+                        if horizon_depths:
+                            # Get the end depths (bottom boundaries of each horizon)
+                            depth_values = [float(depth[1]) for depth in horizon_depths]
+                            
+                            self.samples.append({
+                                'sample_name': sample_name,
+                                'image_path': processed_image,
+                                'depth_values': depth_values,
+                                'num_horizons': len(depth_values),
+                                'metadata': metadata
+                            })
+                            
                 except Exception as e:
-                    print(f"Ignorer fichier metadata invalide {metadata_file}: {e}")
+                    print(f"Erreur lors du chargement {metadata_file}: {e}")
         
-        print(f"Trouvé {len(self.samples)} échantillons valides")
+        print(f"Trouvé {len(self.samples)} échantillons avec données de profondeur")
     
     def __len__(self):
         return len(self.samples)
@@ -117,203 +160,110 @@ class SoilHorizonDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
-        # Read image
+        # Load image
         image = cv2.imread(str(sample['image_path']))
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Read mask
-        mask = cv2.imread(str(sample['mask_path']), cv2.IMREAD_GRAYSCALE)
-        
-        # Limit number of horizons
-        mask = np.clip(mask, 0, self.max_horizons)
+        # Convert to PIL for transforms
+        image = Image.fromarray(image)
         
         # Apply transforms
         if self.transform:
-            try:
-                # Try albumentations format first
-                transformed = self.transform(image=image, mask=mask)
-                image = transformed['image']
-                mask = transformed['mask']
-                # Ensure mask is long type
-                if isinstance(mask, torch.Tensor):
-                    mask = mask.long()
-                else:
-                    mask = torch.from_numpy(mask).long()
-            except TypeError:
-                # Fall back to torchvision transforms
-                from PIL import Image as PILImage
-                image_pil = PILImage.fromarray(image)
-                image = self.transform(image_pil)
-                # For torchvision, we need to handle mask separately
-                mask = torch.from_numpy(cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)).long()
+            image = self.transform(image)
         else:
-            # Default transform to tensor
-            image = torch.from_numpy(image.transpose(2, 0, 1)).float() / 255.0
-            mask = torch.from_numpy(mask).long()
+            # Default transform
+            to_tensor = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                   std=[0.229, 0.224, 0.225])
+            ])
+            image = to_tensor(image)
         
-        # Ensure mask is correct type and clamp values
-        mask = mask.long()
-        mask = torch.clamp(mask, 0, self.max_horizons)
+        # Prepare target depths
+        depth_values = sample['depth_values']
+        target = torch.zeros(self.max_horizons, dtype=torch.float32)
+        
+        # Fill in actual depth values
+        for i, depth in enumerate(depth_values[:self.max_horizons]):
+            target[i] = float(depth)
+        
+        # Create mask for valid horizons (non-zero depths)
+        valid_mask = torch.zeros(self.max_horizons, dtype=torch.float32)
+        valid_mask[:len(depth_values)] = 1.0
         
         return {
             'image': image,
-            'mask': mask,
-            'sample_name': sample['sample_name'],
-            'num_horizons': sample['metadata'].get('horizon_info', {}).get('num_horizons', 0)
+            'depths': target,
+            'valid_mask': valid_mask,
+            'num_horizons': len(depth_values),
+            'sample_name': sample['sample_name']
         }
 
 
-def get_transforms(mode: str = 'train', image_size: Tuple[int, int] = (512, 512)):
-    """Get data transforms"""
-    try:
-        import albumentations as A
-        from albumentations.pytorch import ToTensorV2
-        
-        if mode == 'train':
-            return A.Compose([
-                A.Resize(height=image_size[0], width=image_size[1]),
-                A.HorizontalFlip(p=0.5),
-                A.RandomBrightnessContrast(p=0.3),
-                A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.3),
-                A.GaussNoise(p=0.2),
-                A.Blur(blur_limit=3, p=0.1),
-                A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ToTensorV2()
-            ])
-        else:
-            return A.Compose([
-                A.Resize(height=image_size[0], width=image_size[1]),
-                A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                ToTensorV2()
-            ])
-    except ImportError:
-        print("Avertissement: albumentations non installé, utilisation des transformations de base")
-        # Use basic torchvision transforms
-        if mode == 'train':
-            return transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize(image_size),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-        else:
-            return transforms.Compose([
-                transforms.ToPILImage(),
-                transforms.Resize(image_size),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-
-
-class SegmentationLoss(nn.Module):
-    """Segmentation loss function"""
+def get_transforms(mode: str = 'train'):
+    """Get data transforms with only brightness/contrast adjustments"""
     
-    def __init__(self, weight=None, ignore_index=255, reduction='mean'):
+    if mode == 'train':
+        return transforms.Compose([
+            transforms.ColorJitter(brightness=0.3, contrast=0.3),  # Only lighting changes
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+    else:
+        return transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+
+
+class DepthRegressionLoss(nn.Module):
+    """Custom loss function for depth regression"""
+    
+    def __init__(self, reduction='mean'):
         super().__init__()
-        self.cross_entropy = nn.CrossEntropyLoss(weight=weight, ignore_index=ignore_index, reduction=reduction)
-        self.dice_loss = DiceLoss()
+        self.mse = nn.MSELoss(reduction='none')
+        self.reduction = reduction
         
-    def forward(self, predictions, targets):
+    def forward(self, predictions, targets, valid_mask):
         """
-        Calculate loss
+        Calculate loss only for valid horizons
         
         Args:
-            predictions: Model predictions (B, C, H, W)
-            targets: Ground truth labels (B, H, W)
+            predictions: Predicted depths (B, max_horizons)
+            targets: Target depths (B, max_horizons)
+            valid_mask: Mask indicating valid horizons (B, max_horizons)
         """
-        if isinstance(predictions, dict):
-            # DeepLabV3 returns dict
-            main_loss = self.cross_entropy(predictions['out'], targets)
-            dice_loss = self.dice_loss(predictions['out'], targets)
-            
-            total_loss = main_loss + 0.5 * dice_loss
-            
-            # Auxiliary loss
-            if 'aux' in predictions:
-                aux_loss = self.cross_entropy(predictions['aux'], targets)
-                total_loss += 0.4 * aux_loss
-                
-            return total_loss
+        # Calculate MSE loss
+        loss = self.mse(predictions, targets)
+        
+        # Apply mask to ignore invalid horizons
+        masked_loss = loss * valid_mask
+        
+        # Calculate mean loss over valid horizons only
+        if self.reduction == 'mean':
+            total_loss = masked_loss.sum()
+            total_valid = valid_mask.sum()
+            return total_loss / (total_valid + 1e-8)
         else:
-            main_loss = self.cross_entropy(predictions, targets)
-            dice_loss = self.dice_loss(predictions, targets)
-            return main_loss + 0.5 * dice_loss
-
-
-class DiceLoss(nn.Module):
-    """Dice loss function"""
-    
-    def __init__(self, smooth=1e-8):
-        super().__init__()
-        self.smooth = smooth
-        
-    def forward(self, predictions, targets):
-        """
-        Calculate Dice loss
-        
-        Args:
-            predictions: Model predictions (B, C, H, W)
-            targets: Ground truth labels (B, H, W)
-        """
-        # Convert predictions to probabilities
-        predictions = F.softmax(predictions, dim=1)
-        
-        # Convert labels to one-hot encoding
-        num_classes = predictions.size(1)
-        targets_one_hot = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
-        
-        # Calculate Dice coefficient
-        intersection = (predictions * targets_one_hot).sum(dim=(2, 3))
-        union = predictions.sum(dim=(2, 3)) + targets_one_hot.sum(dim=(2, 3))
-        
-        dice = (2 * intersection + self.smooth) / (union + self.smooth)
-        dice_loss = 1 - dice.mean()
-        
-        return dice_loss
-
-
-def calculate_class_weights(dataset: SoilHorizonDataset, num_classes: int) -> torch.Tensor:
-    """Calculate class weights for handling imbalanced data"""
-    class_counts = torch.zeros(num_classes)
-    
-    print("Calcul des poids de classes...")
-    for i in range(min(len(dataset), 50)):  # Sample subset to speed up
-        sample = dataset[i]
-        mask = sample['mask']
-        
-        # Count pixels for each class
-        unique, counts = torch.unique(mask, return_counts=True)
-        for class_id, count in zip(unique, counts):
-            if class_id < num_classes:
-                class_counts[class_id] += count.item()
-    
-    # Remove zeros and calculate weights (inverse proportion)
-    class_counts = torch.clamp(class_counts, min=1.0)  # Avoid division by zero
-    total_pixels = class_counts.sum()
-    class_weights = total_pixels / (num_classes * class_counts)
-    
-    print(f"Distribution des classes: {class_counts}")
-    print(f"Poids des classes: {class_weights}")
-    
-    return class_weights
+            return masked_loss
 
 
 def create_data_loaders(data_dir: str, batch_size: int = 8, val_split: float = 0.2, 
-                       image_size: Tuple[int, int] = (512, 512), num_workers: int = 4):
-    """Create data loaders"""
+                       num_workers: int = 0):
+    """Create data loaders for training and validation"""
     
-    # Create dataset
-    full_dataset = SoilHorizonDataset(
-        data_dir=data_dir,
-        transform=get_transforms('train', image_size)
-    )
+    # Create datasets
+    train_transform = get_transforms('train')
+    val_transform = get_transforms('val')
+    
+    full_dataset = SoilHorizonDepthDataset(data_dir, transform=train_transform)
     
     if len(full_dataset) == 0:
-        raise ValueError("Aucune donnée d'entraînement valide trouvée")
+        raise ValueError("Aucune donnée valide trouvée")
     
-    # Split into train and validation sets
+    # Split dataset
     val_size = int(len(full_dataset) * val_split)
     train_size = len(full_dataset) - val_size
     
@@ -322,8 +272,7 @@ def create_data_loaders(data_dir: str, batch_size: int = 8, val_split: float = 0
         generator=torch.Generator().manual_seed(42)
     )
     
-    # Set different transforms for validation set
-    val_transform = get_transforms('val', image_size)
+    # Set validation transform
     val_dataset.dataset.transform = val_transform
     
     # Create data loaders
@@ -332,8 +281,7 @@ def create_data_loaders(data_dir: str, batch_size: int = 8, val_split: float = 0
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=False,  # Disable for CPU
-        drop_last=True
+        pin_memory=True if torch.cuda.is_available() else False
     )
     
     val_loader = DataLoader(
@@ -341,29 +289,51 @@ def create_data_loaders(data_dir: str, batch_size: int = 8, val_split: float = 0
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=False  # Disable for CPU
+        pin_memory=True if torch.cuda.is_available() else False
     )
     
     return train_loader, val_loader, full_dataset
 
 
-if __name__ == "__main__":
-    """Test model and dataset"""
+def calculate_metrics(predictions, targets, valid_mask):
+    """Calculate regression metrics"""
+    # Apply mask
+    pred_valid = predictions * valid_mask
+    target_valid = targets * valid_mask
     
-    print("=== Test du modèle de segmentation des horizons ===")
+    # Calculate MAE (Mean Absolute Error) only for valid horizons
+    mae = torch.abs(pred_valid - target_valid) * valid_mask
+    total_mae = mae.sum() / (valid_mask.sum() + 1e-8)
+    
+    # Calculate RMSE (Root Mean Square Error)
+    mse = ((pred_valid - target_valid) ** 2) * valid_mask
+    rmse = torch.sqrt(mse.sum() / (valid_mask.sum() + 1e-8))
+    
+    return {
+        'mae': total_mae.item(),
+        'rmse': rmse.item()
+    }
+
+
+if __name__ == "__main__":
+    """Test the depth regression model"""
+    
+    print("=== Test du modèle de régression des profondeurs ===")
     
     # Test model
-    model = HorizonSegmentationModel(num_classes=8, backbone='resnet50')
-    print(f"Nombre de paramètres du modèle: {sum(p.numel() for p in model.parameters()):,}")
+    model = LightweightUNet(max_horizons=7)
+    print(f"Paramètres du modèle: {sum(p.numel() for p in model.parameters()):,}")
     
     # Test dataset
     data_dir = "data/processed"
     try:
-        dataset = SoilHorizonDataset(data_dir)
+        dataset = SoilHorizonDepthDataset(data_dir)
         if len(dataset) > 0:
             sample = dataset[0]
-            print(f"Forme de l'échantillon: image {sample['image'].shape}, masque {sample['mask'].shape}")
-            print(f"Valeurs uniques dans le masque: {torch.unique(sample['mask'])}")
+            print(f"Forme de l'échantillon: image {sample['image'].shape}")
+            print(f"Profondeurs cibles: {sample['depths']}")
+            print(f"Masque valide: {sample['valid_mask']}")
+            print(f"Nombre d'horizons: {sample['num_horizons']}")
         else:
             print("Dataset vide")
     except Exception as e:
@@ -373,7 +343,5 @@ if __name__ == "__main__":
     x = torch.randn(2, 3, 512, 512)
     with torch.no_grad():
         output = model(x)
-        if isinstance(output, dict):
-            print(f"Forme de sortie du modèle: {output['out'].shape}")
-        else:
-            print(f"Forme de sortie du modèle: {output.shape}")
+        print(f"Forme de sortie du modèle: {output.shape}")
+        print(f"Exemple de prédictions: {output[0]}")
