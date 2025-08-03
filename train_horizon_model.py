@@ -14,7 +14,7 @@ def main():
     params = [
         sys.executable, "src/train_horizon_segmentation.py",
         "--data-dir", "data/processed",
-        "--batch-size", "4",  # Reduced for memory constraints
+        "--batch-size", "1",  # Avoid size mismatch issues
         "--epochs", "50",
         "--lr", "0.001",      # Standard learning rate for U-Net
         "--max-horizons", "7",

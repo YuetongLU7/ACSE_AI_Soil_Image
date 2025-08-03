@@ -205,6 +205,7 @@ def get_transforms(mode: str = 'train'):
     
     if mode == 'train':
         return transforms.Compose([
+            ResizeByMaxSide(512),
             transforms.ColorJitter(brightness=0.3, contrast=0.3),  # Only lighting changes
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], 
@@ -212,10 +213,23 @@ def get_transforms(mode: str = 'train'):
         ])
     else:
         return transforms.Compose([
+            ResizeByMaxSide(512),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                                std=[0.229, 0.224, 0.225])
         ])
+
+
+class ResizeByMaxSide:
+    """Resize image so that the longer side = max_side, keeping aspect ratio"""
+    def __init__(self, max_side=512):
+        self.max_side = max_side
+
+    def __call__(self, img: Image.Image):
+        w, h = img.size
+        scale = self.max_side / max(w, h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        return img.resize((new_w, new_h), Image.BILINEAR)
 
 
 class DepthRegressionLoss(nn.Module):
