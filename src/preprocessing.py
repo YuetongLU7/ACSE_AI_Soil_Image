@@ -63,16 +63,21 @@ class SoilImagePreprocessor:
             ruler_mask = None
         else:
             ruler_mask = self.ruler_detector.extract_ruler_region(image, ruler_info)
-            print(f"Successfully detected ruler，scale ratio: {ruler_info['scale_ratio']:.2f} pixel/cm")
+
+        # Step 2: Calculate upper boundary based on ruler 0 position
+        upper_boundary = None
+        if ruler_info is not None:
+            upper_boundary = self.ruler_detector.calculate_upper_boundary(ruler_info)
         
-        # 步骤2: 土壤区域分割和物体移除
+        # Step 3: Soil segmentation and object removal
         segmentation_result = self.soil_segmentation.process_image(
             image, 
             ruler_mask, 
+            upper_boundary,
             mask_type=self.config['preprocessing']['soil_segmentation']['mask_type']
         )
         
-        # 收集结果
+        # Reserve results
         result = {
             'image_name': image_name,
             'original_image': image,
@@ -109,7 +114,7 @@ class SoilImagePreprocessor:
         
         # 清空输出目录
         if clear_output and output_path.exists():
-            print(f"清空输出目录: {output_path}")
+            print(f"Effacer le répertoire de sortie: {output_path}")
             shutil.rmtree(output_path)
         
         output_path.mkdir(parents=True, exist_ok=True)
@@ -133,15 +138,15 @@ class SoilImagePreprocessor:
                           if f.stem not in processed_names]
             
             if image_files:
-                print(f"增量处理模式: 跳过 {len(all_image_files) - len(image_files)} 个已处理文件")
+                print(f"Mode de traitement incrémentiel: {len(all_image_files) - len(image_files)} fichiers traités")
             else:
-                print("增量处理模式: 所有文件已处理完成")
+                print("Mode de traitement incrémentiel: Tous les fichiers ont été traités")
                 return []
         else:
             image_files = all_image_files
         
         if not image_files:
-            print(f"在目录 {input_dir} 中未找到图像文件")
+            print(f"Aucun fichier image trouvé dans le répertoire {input_dir}")
             return []
         
         results = []
@@ -150,7 +155,7 @@ class SoilImagePreprocessor:
         
         for i, image_file in enumerate(image_files, 1):
             try:
-                print(f"处理图像 ({i}/{len(image_files)}): {image_file.name}")
+                print(f"Traiter l'image ({i}/{len(image_files)}): {image_file.name}")
                 result = self.process_single_image(str(image_file), str(output_path))
                 results.append(result)
                 successful_count += 1
@@ -159,14 +164,14 @@ class SoilImagePreprocessor:
                 if result['ruler_info'] and result['ruler_info']['ruler_detected']:
                     method = result['ruler_info'].get('detection_method', 'unknown')
                     confidence = result['ruler_info'].get('confidence', 0)
-                    print(f"  ✓ 米尺检测成功 - 方法: {method}, 置信度: {confidence:.2f}, 比例: {result['ruler_info']['scale_ratio']:.2f} px/cm")
+                    print(f"  ✓ Mètre ruban détecté avec succès - méthode: {method}, confiance: {confidence:.2f}, échelle: {result['ruler_info']['scale_ratio']:.2f} px/cm")
                 else:
-                    print(f"  ✗ 未检测到米尺")
+                    print(f"  ✗ Mètre ruban non détecté")
                     
-                print(f"  检测到 {len(result['detected_objects'])} 个物体")
+                print(f"  {len(result['detected_objects'])} objets détectés")
                 
             except Exception as e:
-                print(f"  ✗ 处理失败: {e}")
+                print(f"  ✗ Traitement échoué: {e}")
                 failed_count += 1
                 
                 # 创建失败记录
@@ -179,17 +184,17 @@ class SoilImagePreprocessor:
                 }
                 results.append(failed_result)
                 continue
-        
-        print(f"\n批处理完成: 成功 {successful_count} 张, 失败 {failed_count} 张")
-        
+
+        print(f"\nTraitement par lots terminé: {successful_count} réussi, {failed_count} échoué")
+
         # 质量过滤
         if self.quality_assessor.enable_filtering:
-            print("开始质量评估和过滤...")
+            print("Démarrer l'évaluation de la qualité et le filtrage...")
             high_quality_results, low_quality_results = self.quality_assessor.filter_low_quality_images(results)
-            
-            print(f"质量过滤结果:")
-            print(f"  高质量图像: {len(high_quality_results)} 张")
-            print(f"  低质量图像: {len(low_quality_results)} 张")
+
+            print(f"Résultats du filtrage de la qualité:")
+            print(f"  Images de haute qualité: {len(high_quality_results)}")
+            print(f"  Images de basse qualité: {len(low_quality_results)}")
             
             # 移动低质量图像到单独文件夹
             if low_quality_results:
@@ -367,19 +372,21 @@ class SoilImagePreprocessor:
             
             for issue in issues:
                 # 提取问题类型
-                if "土壤覆盖率" in issue:
-                    problem_type = "土壤覆盖率过低"
-                elif "反光区域" in issue:
-                    problem_type = "反光区域过多"
-                elif "对比度" in issue:
-                    problem_type = "对比度不足"
-                elif "阴影区域" in issue:
-                    problem_type = "阴影区域过多"
-                elif "连通性" in issue:
-                    problem_type = "掩码连通性差"
+                if "Couverture du sol" in issue:
+                    problem_type = "Couverture sol trop faible"
+                elif "Zones réfléchissantes" in issue:
+                    problem_type = "Trop de zones réfléchissantes"
+                elif "Contraste" in issue:
+                    problem_type = "Contraste insuffisant"
+                elif "Zones d'ombre" in issue:
+                    problem_type = "Trop de zones d'ombre"
+                elif "Connectivité du masque" in issue:
+                    problem_type = "Connectivité du masque insuffisante"
+                elif "Détection du mètre ruban échouée" in issue:
+                    problem_type = "Échec de détection du mètre ruban"
                 else:
-                    problem_type = "其他问题"
-                
+                    problem_type = "Autres problèmes"
+
                 if problem_type not in problem_stats:
                     problem_stats[problem_type] = 0
                 problem_stats[problem_type] += 1
@@ -425,16 +432,16 @@ class SoilImagePreprocessor:
             json.dump(report, f, indent=2, ensure_ascii=False)
             
         # 打印摘要
-        print(f"\\n质量评估摘要:")
-        print(f"  总图像数: {total_count}")
-        print(f"  高质量: {high_quality_count} ({high_quality_count/total_count*100:.1f}%)")
-        print(f"  低质量: {low_quality_count} ({low_quality_count/total_count*100:.1f}%)")
-        
+        print(f"\\nRésumé de l'évaluation de la qualité:")
+        print(f"  Nombre total d'images: {total_count}")
+        print(f"  Haute qualité: {high_quality_count} ({high_quality_count/total_count*100:.1f}%)")
+        print(f"  Basse qualité: {low_quality_count} ({low_quality_count/total_count*100:.1f}%)")
+
         if problem_stats:
-            print(f"\\n主要质量问题:")
+            print(f"\\nPrincipaux problèmes de qualité:")
             for problem, count in sorted(problem_stats.items(), key=lambda x: x[1], reverse=True):
-                print(f"  {problem}: {count} 张图像")
-    
+                print(f"  {problem}: {count} images")
+
     def create_training_dataset(self, processed_results: List[Dict], 
                               output_dir: str, 
                               train_ratio: float = 0.8):
