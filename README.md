@@ -234,23 +234,23 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ###  Exemple de Workflow Complet
 
 #### 1. Image Originale
-![alt text](image.png)
+![alt text](photo/image.png)
 *Image brute de profil de sol avec mètre-ruban visible*
 
 #### 2. Prétraitement - Détection du Mètre et Segmentation
-![alt text](1f4ad424d449b702b6769e7886ab4f1f.png)
+![alt text](photo/1f4ad424d449b702b6769e7886ab4f1f.png)
 *Résultat du prétraitement : suppression du ciel/végétation, détection du mètre-ruban*
 
 #### 3. Annotation LabelMe des Horizons
-![alt text](image-1.png)
+![alt text](photo/image-1.png)
 *Interface LabelMe montrant l'annotation des lignes d'horizon (label "0") et bordures de fosse (label "1")*
 
 #### 4. Résultat de Détection d'Horizons par IA
-![alt text](dc75f6d2774debc6b7a2095ca02ce3cf.png)
+![alt text](photo/debug_data_loading.png)
 *Détection automatique des lignes d'horizon : masque binaire et superposition sur image originale*
 
 #### 5. Détection des Éléments Grossiers  
-![alt text](image-2.png)
+![alt text](photo/image-2.png)
 *Identification et classification automatique des cailloux et éléments grossiers*
 
 ###  Performances du Système
