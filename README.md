@@ -421,20 +421,9 @@ labelme data/processed/ --output data/label/
 ---
 
 ##  Contexte Académique et Recherche
+1. Développer un outil basé sur une application smartphone permettant de capturer des images de profils de sols et d’en extraire automatiquement des informations pour fournir des recommandations agronomiques.  
+2. Compléter et enrichir la description des profils de sols du Grand Est, en automatisant leur analyse morphologique.
 
-Ce projet s'inscrit dans le cadre de la recherche en **pédologie numérique** et **agriculture de précision**. Il vise à automatiser l'analyse morphologique des profils de sol, traditionnellement effectuée manuellement par les pédologues.
-
-### Applications Scientifiques
-- **Cartographie pédologique**: Classification automatisée des sols
-- **Monitoring environnemental**: Suivi de l'évolution des profils  
-- **Agriculture de précision**: Caractérisation rapide des parcelles
-- **Formation pédagogique**: Outil d'apprentissage pour étudiants
-
-### Publications et Références
-*Section réservée aux futures publications scientifiques découlant de ce travail*
-
-### Partenaires de Recherche
-*Institutions et laboratoires collaborateurs*
 
 ---
 
