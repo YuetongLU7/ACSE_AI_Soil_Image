@@ -438,5 +438,8 @@ Ce projet s'inscrit dans le cadre de la recherche en **pédologie numérique** e
 
 ---
 
-**Développé dans le cadre d'un projet de recherche en pédologie numérique**  
-**Contact**: [Informations de contact à compléter]
+**Encadrants :**  
+Dominique Benmouffek — Enseignante-Chercheure — Mines de Nancy  
+Pierre Léglize — Maître de conférences — ENSAIA  
+Sophie Maillant — Chargée de mission Sol — Chambre d'Agriculture du Grand Est
+
