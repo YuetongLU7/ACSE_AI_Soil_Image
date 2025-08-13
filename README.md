@@ -12,13 +12,13 @@ Ce projet implémente un système complet d'analyse automatisée des images de p
 - **Calcul du ratio pixels/cm** pour l'analyse dimensionnelle précise
 - **Évaluation de la qualité** des images avec filtrage automatique
 
-### Phase 2 : Détection des Horizons Pédologiques (Terminée)
+### Phase 2 : Détection des Horizons Pédologiques (À optimiser)
 - **Détection des lignes d'horizon** par apprentissage profond (U-Net)
 - **Apprentissage des caractéristiques visuelles** (couleur, texture, granulométrie)
 - **Identification automatique** des limites entre couches de sol
 - **Annotation avec LabelMe** pour la création de datasets d'entraînement
 
-### Phase 3 : Identification des Éléments Grossiers (Terminée)  
+### Phase 3 : Identification des Éléments Grossiers (À optimiser)  
 - **Détection des cailloux et éléments grossiers** dans les profils
 - **Classification par taille et forme** des éléments détectés
 - **Quantification automatique** du pourcentage d'éléments grossiers
@@ -235,22 +235,27 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 #### 1. Image Originale
 ![alt text](photo/image.png)
+
 *Image brute de profil de sol avec mètre-ruban visible*
 
 #### 2. Prétraitement - Détection du Mètre et Segmentation
 ![alt text](photo/1f4ad424d449b702b6769e7886ab4f1f.png)
+
 *Résultat du prétraitement : suppression du ciel/végétation, détection du mètre-ruban*
 
 #### 3. Annotation LabelMe des Horizons
 ![alt text](photo/image-1.png)
+
 *Interface LabelMe montrant l'annotation des lignes d'horizon (label "0") et bordures de fosse (label "1")*
 
 #### 4. Résultat de Détection d'Horizons par IA
 ![alt text](photo/debug_data_loading.png)
+
 *Détection automatique des lignes d'horizon : masque binaire et superposition sur image originale*
 
 #### 5. Détection des Éléments Grossiers  
 ![alt text](photo/image-2.png)
+
 *Identification et classification automatique des cailloux et éléments grossiers*
 
 ###  Performances du Système
